@@ -1,194 +1,49 @@
-# Netdata Hitron CODA Cable Modem Python.d Plugin
+# Netdata Hitron CODA Cable Modem Plugin
 
-A comprehensive Netdata plugin for monitoring Hitron CODA cable modems via their web interface. This plugin provides detailed visibility into your cable modem's performance with **31 downstream channels**, **5 upstream channels**, and **DOCSIS 3.1 OFDM** monitoring.
+A comprehensive Netdata plugin for monitoring Hitron CODA cable modems with **31 downstream channels**, **5 upstream channels**, **DOCSIS 3.1 OFDM support**, and **built-in reliability monitoring**.
 
-## 📊 What This Plugin Monitors
+## 🚀 Features
 
-### **Downstream QAM Channels (31 channels)**
-Your cable modem uses multiple channels simultaneously for downloading data:
+- **50+ Metrics**: Complete visibility into all cable modem channels and performance
+- **DOCSIS 3.1 Support**: Monitor next-generation OFDM channels for gigabit+ speeds
+- **Built-in Health Monitoring**: Track plugin reliability, response times, and success rates
+- **Enhanced Reliability**: Auto-calculated timeouts, retry logic, and cache-busting URLs
+- **Smart Alerts**: Comprehensive health monitoring for both modem and plugin performance
 
-- **Power Levels** (-15 to +15 dBmV optimal) - Signal strength from your ISP
-- **SNR (Signal-to-Noise Ratio)** (>30 dB good) - Signal quality vs background noise  
-- **Frequencies** (531-711 MHz) - Which TV channels your modem uses for internet
-- **Data Throughput** - Real-time data transfer per channel
-- **Error Rates** - Corrected/uncorrected transmission errors per channel
+## 📊 Charts Generated (15 Total)
 
-### **Upstream QAM Channels (5 channels)**  
-Channels used for uploading data to your ISP:
+### Plugin Monitoring
+- **Plugin Health**: Success rates, response times, consecutive failures, active endpoints
 
-- **Power Levels** (35-50 dBmV optimal) - How hard your modem transmits
-- **Frequencies** (16-40 MHz) - Upload channel assignments
-- **Bandwidth** (3.2 or 6.4 MHz) - Channel width allocations
+### Signal Quality  
+- **Downstream Power** (31 channels): -15 to +15 dBmV optimal range
+- **Downstream SNR** (31 channels): >30 dB good, >35 dB excellent
+- **Upstream Power** (5 channels): 35-50 dBmV optimal range
+- **OFDM Power & SNR**: DOCSIS 3.1 high-speed channel monitoring
 
-### **DOCSIS 3.1 OFDM Channels** 🚀
-Next-generation high-speed channels for gigabit+ internet:
+### Performance & Throughput
+- **Downstream Throughput**: Real-time data transfer per channel
+- **OFDM Throughput**: High-speed DOCSIS 3.1 data rates
+- **Frequencies**: Channel assignments for downstream (531-711 MHz) and upstream (16-40 MHz)
+- **Bandwidth**: Upstream channel widths (3.2 or 6.4 MHz)
 
-- **OFDM Power Levels** - Advanced downstream signal strength
-- **OFDM SNR** - Signal quality for high-speed channels  
-- **OFDM Throughput** - Gigabit-class data transfer rates
+### Error Monitoring
+- **Corrected Errors**: Fixed transmission problems per channel
+- **Uncorrected Errors**: Lost data causing slowdowns and timeouts
 
-### **System Metrics**
-- **Uptime** - How long since modem last rebooted
-- **Link Speed** - Negotiated connection speed with ISP
-
-## 🎯 Why These Metrics Matter
-
-### **Power Levels**
-- **Too Low**: Weak signal = slow speeds, timeouts, dropped connections
-- **Too High**: Over-amplified signal = interference, data corruption
-- **Just Right**: Stable, fast internet performance
-
-### **SNR (Signal-to-Noise Ratio)**
-- **High SNR** (>35 dB): Clean signal, maximum speeds
-- **Low SNR** (<25 dB): Noisy signal, packet loss, slow speeds
-- Think of it like trying to have a conversation in a noisy room
-
-### **Error Rates**
-- **Corrected Errors**: Your modem is working hard to fix transmission problems
-- **Uncorrected Errors**: Data is being lost, causing slowdowns and timeouts
-- **Zero Errors**: Perfect signal quality
-
-### **DOCSIS 3.1 OFDM**
-- **Traditional QAM**: Like having 31 lanes of traffic
-- **OFDM**: Like adding a superhighway with thousands of micro-lanes
-- **Combined**: Multi-gigabit internet capability
-
-## 📈 Charts Generated
-
-### **Signal Quality Section**
-- `downstream_power` - Downstream QAM Power Levels (31 channels)
-- `downstream_snr` - Downstream QAM Signal Quality (31 channels)  
-- `upstream_power` - Upstream QAM Power Levels (5 channels)
-- `ofdm_downstream_power` - OFDM Power Levels (DOCSIS 3.1)
-- `ofdm_downstream_snr` - OFDM Signal Quality (DOCSIS 3.1)
-
-### **Performance Section**
-- `downstream_throughput` - Real-time download data per channel
-- `ofdm_downstream_throughput` - High-speed OFDM data transfer
-- `downstream_frequency` - Channel frequency assignments
-- `upstream_frequency` - Upload channel frequencies
-- `upstream_bandwidth` - Upload channel widths
-
-### **Error Monitoring Section**
-- `downstream_corrected` - Corrected transmission errors per channel
-- `downstream_uncorrected` - Uncorrected errors (packet loss)
-
-### **System Section**
-- `system_uptime` - Modem uptime in hours
-- `link_speed` - Connection speed in Mbps
-
-## 🚨 Smart Health Monitoring
-
-### **Automatic Alerts For:**
-
-#### **Signal Issues**
-- Power levels outside optimal range (-15 to +15 dBmV downstream, 35-50 dBmV upstream)
-- SNR degradation below 30 dB (25 dB critical)
-- OFDM signal quality problems
-
-#### **Performance Problems**
-- High error rates indicating line quality issues
-- Throughput drops compared to historical performance
-- Frequency drift suggesting hardware problems
-
-#### **System Health**
-- Frequent modem reboots (uptime < 1 hour)
-- Reduced channel count (missing channels)
-- Connection speed below expected levels
-
-#### **DOCSIS 3.1 Monitoring**
-- OFDM channel availability
-- High-speed channel performance degradation
-- Advanced modulation profile changes
-
-### **Intelligent Alerting**
-- **Progressive Delays**: Waits 2-5 minutes for temporary issues to resolve
-- **Escalating Notifications**: Longer delays for repeated alerts  
-- **Problem-Specific Guidance**: Each alert includes troubleshooting steps
-- **Composite Scoring**: Overall performance health indicators
-
-## 📚 Learn More About Cable Modems
-
-### **Beginner-Friendly Resources**
-- [Cable Modem Basics - Arris](https://www.arris.com/globalassets/resources/white-papers/cable_modem_primer.pdf) - Technical primer on how cable modems work
-- [DOCSIS Explained - CableLabs](https://www.cablelabs.com/technologies/docsis) - Official DOCSIS technology overview
-- [Cable Internet 101 - Motorola](https://www.motorolasolutions.com/content/dam/msi/docs/business/broadband/cable_modems_101.pdf) - Consumer guide to cable internet
-
-### **Signal Quality Guidelines**
-- **Downstream Power**: -15 to +15 dBmV (optimal: -10 to +10 dBmV)
-- **Upstream Power**: 35 to 50 dBmV (your levels: 39-41 dBmV ✅)
-- **SNR**: >30 dB good, >35 dB excellent (your levels: 36-39 dB ✅)
-- **Error Rates**: <100 corrected/hour acceptable, 0 uncorrected ideal
-
-### **When to Contact Your ISP**
-- Consistent power levels outside -15 to +15 dBmV
-- SNR consistently below 25 dB
-- High uncorrected error rates (>10 per hour)
-- Frequent modem reboots
-- Missing channels (fewer than expected active)
-
-## 🔧 Features
-
-- **Comprehensive Monitoring**: 50+ metrics vs basic 6-metric monitoring
-- **DOCSIS 3.1 Support**: Monitor next-generation OFDM channels
-- **Real-time Performance**: 5-second updates for responsive monitoring
-- **Channel-Specific Alerts**: Individual monitoring of all 31+5 channels
-- **Historical Trending**: Track performance over time
-- **ISP-Grade Monitoring**: Enterprise-level cable modem visibility
-
-## 📸 Screenshots
-
-![Downstream Power](screenshots/downstream_power.png)
-*31-channel downstream power monitoring with per-channel visibility*
-
-![SNR Chart](screenshots/snr_chart.png)  
-*Signal quality monitoring across all downstream channels*
-
-![OFDM Performance](screenshots/ofdm_performance.png)
-*DOCSIS 3.1 OFDM high-speed channel monitoring*
-
-![System Overview](screenshots/system_overview.png)
-*Complete cable modem health dashboard*
-
-## 🛠️ Requirements
-
-- Netdata (tested with v1.40+)
-- Python 3.6+
-- Python packages: `requests`, `urllib3`
-- Hitron CODA cable modem (tested models: CODA-4582, CODA-4680, CODA-56)
+### System Status
+- **Uptime**: Time since last modem reboot (in minutes for better granularity)
+- **Link Speed**: Negotiated connection speed with ISP
 
 ## ⚡ Quick Installation
 
-### Method 1: Automated Installation
-
 ```bash
-git clone https://github.com/yourusername/netdata-hitron-plugin.git
-cd netdata-hitron-plugin
-sudo chmod +x scripts/install-health-monitoring.sh
-sudo ./scripts/install-health-monitoring.sh
-```
-
-### Method 2: Manual Installation
-
-1. **Install the plugin**:
-```bash
+# Download and install the plugin
 sudo cp hitron_coda.chart.py /usr/libexec/netdata/python.d/
 sudo cp hitron_coda.conf /etc/netdata/python.d/
-```
-
-2. **Install health monitoring**:
-```bash
 sudo cp health/hitron_coda.conf /etc/netdata/health.d/
-```
 
-3. **Install enhanced notifications** (optional):
-```bash
-sudo cp notifications/alarm-notify-custom.sh /usr/libexec/netdata/plugins.d/
-sudo chmod +x /usr/libexec/netdata/plugins.d/alarm-notify-custom.sh
-```
-
-4. **Restart Netdata**:
-```bash
+# Restart Netdata
 sudo systemctl restart netdata
 ```
 
@@ -199,192 +54,108 @@ Edit `/etc/netdata/python.d/hitron_coda.conf`:
 ```yaml
 localhost:
   name: 'hitron_coda'
-  host: 'https://192.168.100.1'  # Your modem's IP
-  update_every: 5                # Update frequency in seconds
+  host: 'https://192.168.100.1'       # Your modem's IP
+  device_name: 'Hitron CODA56 Cable Modem'  # Custom display name
+  update_every: 20                    # Collection interval (seconds)
+  # timeout: 10                       # Auto-calculated (70% of update_every)
+  # max_retries: 3                    # Retry attempts for failed requests
 ```
 
-### Configuration Options
+**Auto-Timeout Calculation**: Plugin automatically sets timeout to 70% of `update_every` (min 5s, max 15s) for optimal reliability.
 
-- `host`: Modem IP address (default: https://192.168.100.1)
-- `update_every`: Update interval in seconds (default: 5, recommended: 5-10)
-- `name`: Plugin instance name
+**Custom Device Names**: The `device_name` appears in all chart titles and the Netdata menu. Use any name you prefer:
+- `'Hitron CODA56 Cable Modem'` (technical)
+- `'Living Room Internet'` (location-based)
+- `'Main Office Modem'` (simple)
+- `'Home Gateway'` (functional)
+- `'MyModem'` (personal)
 
-## 🎛️ Alert Configuration
+## 🩺 Plugin Health Monitoring
 
-Customize alert thresholds in `/etc/netdata/health.d/hitron_coda.conf`:
+Monitor the monitoring system itself:
 
-```bash
-# Example: Adjust for your internet plan
-template: hitron_coda_link_speed_low
-    warn: $this < 500    # Warning below 500 Mbps  
-    crit: $this < 200    # Critical below 200 Mbps
-```
+- **Success Rate**: >90% indicates reliable operation
+- **Response Times**: <2000ms typical for healthy modems  
+- **Consecutive Failures**: High values indicate modem or network issues
+- **Active Endpoints**: Should show 5-6 responding API endpoints
 
-### Notification Setup
+## 🚨 Key Alert Thresholds
 
-Configure recipients in `/etc/netdata/health_alarm_notify.conf`:
+### Signal Quality Alerts
+- **Power Levels**: Warning outside -15 to +15 dBmV (downstream), 35-50 dBmV (upstream)
+- **SNR**: Warning below 30 dB, critical below 25 dB
+- **Error Rates**: Warning >100 corrected errors/hour, any uncorrected errors
 
-```bash
-# Email notifications
-DEFAULT_RECIPIENT_EMAIL="admin@yourdomain.com"
-
-# Slack notifications  
-SLACK_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK"
-DEFAULT_RECIPIENT_SLACK="network-alerts"
-```
+### Plugin Health Alerts  
+- **Success Rate**: Warning <90%, critical <75%
+- **Response Time**: Warning >2000ms, critical >5000ms
+- **Consecutive Failures**: Warning >5, critical >15
 
 ## 🏠 Supported Modems
 
-This plugin has been tested with:
 - **Hitron CODA-4582** ✅
 - **Hitron CODA-4680** ✅  
 - **Hitron CODA-56** ✅
 
-Should work with other Hitron CODA series modems that expose the same API endpoints:
-- `/data/dsinfo.asp` - Downstream QAM channels
-- `/data/dsofdminfo.asp` - OFDM downstream channels  
-- `/data/usinfo.asp` - Upstream QAM channels
-- `/data/usofdminfo.asp` - OFDM upstream channels
-- `/data/getSysInfo.asp` - System information
-- `/data/getLinkStatus.asp` - Link status
-
 ## 🔍 Troubleshooting
 
-### Plugin Not Showing Up
+### Quick Health Check
+1. **Check Plugin Health chart** in Netdata dashboard first
+2. **Success rate <90%**: Increase `update_every` interval or check network connectivity
+3. **High response times**: Modem may be overloaded or slow
+4. **High consecutive failures**: Check modem accessibility and power
 
-1. **Check if plugin is enabled**:
-```bash
-sudo netdata -W debug -D | grep hitron
-```
+### Common Solutions
+- **Timeout errors**: Plugin auto-calculates optimal timeout, but manually set `timeout: 15` for slow modems
+- **Connection issues**: Verify modem IP in `host` parameter
+- **Plugin not in Remote Devices**: Charts are now properly categorized as `cable_modem_*`
 
-2. **Check Netdata logs**:
-```bash
-sudo journalctl -u netdata -f
-```
-
-3. **Verify modem accessibility**:
-```bash
-curl -k https://192.168.100.1/data/dsinfo.asp
-```
-
-### Common Issues
-
-- **SSL Certificate Errors**: Plugin disables SSL verification for self-signed certificates
-- **Timeout Errors**: Increase timeout in code if modem is slow to respond  
-- **Permission Errors**: Ensure plugin files have proper ownership (`netdata:netdata`)
-- **Missing Charts**: Verify modem API endpoints are accessible
-
-### Testing the Plugin
-
-Test independently:
-
+### Manual Testing
 ```bash
 cd /usr/libexec/netdata/python.d/
 python3 hitron_coda.chart.py
 ```
 
-Expected output with 50+ metrics:
+Expected output includes health metrics:
 ```json
 {
-  "ds_power_2": 53,      // Downstream power * 10
-  "ds_snr_2": 3860,      // Downstream SNR * 100  
-  "us_power_1": 4127,    // Upstream power * 100
-  "ofdm_ds_power_1": 580, // OFDM power * 100
+  "success_rate": 100,
+  "response_time": 250,
+  "consecutive_failures": 0,
+  "active_endpoints": 5,
+  "ds_power_2": 53,
+  "uptime": 7680,  // Now in minutes, not hours
   ...
 }
 ```
 
-### Performance Tuning
+## 📈 What the Numbers Mean
 
-For systems monitoring many modems:
+### Power Levels
+- **-15 to +15 dBmV** (downstream): Goldilocks zone for stable internet
+- **35 to 50 dBmV** (upstream): Optimal transmit power range
+- **Outside range**: Causes slow speeds, dropouts, or data corruption
 
-```ini
-# /etc/netdata/netdata.conf
-[plugin:python.d]
-    update every = 10    # Reduce frequency if needed
+### SNR (Signal-to-Noise Ratio)  
+- **>35 dB**: Excellent signal quality, maximum speeds
+- **30-35 dB**: Good signal quality  
+- **<25 dB**: Poor signal, packet loss and slow speeds likely
 
-[plugin:python.d:hitron_coda]  
-    update every = 10    # Per-plugin override
-```
+### Error Rates
+- **Corrected Errors**: Modem fixing transmission problems (some acceptable)
+- **Uncorrected Errors**: Lost data causing slowdowns (should be zero)
 
-## 📊 Dashboard Integration
+### Plugin Health
+- **Success Rate**: How reliably the plugin collects data from your modem
+- **Response Time**: How quickly your modem responds to requests
 
-### Custom Dashboard Sections
+## 🎯 Why This Matters
 
-Access your cable modem data at:
-- **Main Dashboard**: `http://your-netdata:19999/`
-- **Cable Modem Section**: Look for "hitron_coda" charts
-- **Health Monitoring**: `http://your-netdata:19999/alarms.html`
-
-### Integration Tips
-
-- **Group Related Charts**: Drag charts to arrange by signal/performance/errors
-- **Set Bookmarks**: Bookmark modem section for quick access
-- **Mobile Access**: Responsive design works on phones/tablets
-- **Embed Widgets**: Use chart URLs for external dashboards
-
-## 🤝 Development
-
-### Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Test with your modem model
-4. Commit changes (`git commit -m 'Add amazing feature'`)
-5. Push to branch (`git push origin feature/amazing-feature`)
-6. Open a Pull Request
-
-### Testing Guidelines
-
-Before submitting PRs:
-- Test with different Hitron CODA models
-- Verify health alerts trigger correctly
-- Test with various network conditions
-- Check for memory leaks during extended runtime
-
-### Plugin Architecture
-
-```
-hitron_coda.chart.py
-├── Service Class
-│   ├── _get_downstream_qam_data()    # 31 QAM channels
-│   ├── _get_downstream_ofdm_data()   # DOCSIS 3.1 OFDM
-│   ├── _get_upstream_qam_data()      # 5 QAM channels  
-│   ├── _get_upstream_ofdm_data()     # DOCSIS 3.1 OFDM
-│   └── _get_system_data()            # Uptime, link speed
-└── Chart Creation
-    ├── Power level charts (QAM + OFDM)
-    ├── Signal quality charts (SNR)
-    ├── Performance charts (throughput)
-    └── Error monitoring charts
-```
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **Netdata Team** - For the excellent monitoring platform
-- **Hitron Technologies** - For providing accessible modem APIs  
-- **CableLabs** - For DOCSIS standards and documentation
-- **Community Contributors** - Testing and feedback
-
-## 📞 Support
-
-- **Issues**: Create GitHub issues for bugs or feature requests
-- **Discussions**: Use GitHub Discussions for questions
-- **Documentation**: Check [docs/HEALTH_MONITORING.md](docs/HEALTH_MONITORING.md) for detailed setup
-
-### When Reporting Issues
-
-Please include:
-- Hitron modem model and firmware version
-- Netdata version
-- Error logs from `journalctl -u netdata`
-- Output from manual plugin test
-- Network environment details (ISP, signal levels)
+- **Proactive Monitoring**: Identify cable/signal issues before they affect your internet
+- **ISP Accountability**: Objective data when calling your ISP about performance issues  
+- **Reliability Insight**: Know if slowdowns are due to signal issues or monitoring problems
+- **Performance Optimization**: Track the impact of cable/splitter changes
 
 ---
 
-**🎯 Transform your basic cable modem into a comprehensive network monitoring station with enterprise-grade visibility into every channel, frequency, and performance metric!**
+**Transform your cable modem into a comprehensive network monitoring station with enterprise-grade visibility into every channel and performance metric!**
