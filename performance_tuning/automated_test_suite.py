@@ -1,338 +1,553 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-Automated Test Suite for Netdata Hitron CODA Plugin Tiered Polling Optimization.
+Automated Test Suite for Hitron CODA Plugin Limit Finding.
 
-This script runs a multi-phase test suite to analyze endpoint performance and
-determine the fastest stable polling configuration for the hitron_coda plugin's
-tiered polling feature.
+Systematically tests polling limits to find the fastest stable configuration
+for fast endpoints and optimal OFDM polling intervals.
 
-Version: 2.0.0
+Version: 2.0.0 - Fixed real-time output display
 """
 
 import asyncio
-import subprocess
-import time
+import sys
 import json
 import csv
+import signal
+import time
+import logging
 from datetime import datetime
 from pathlib import Path
-import logging
-import sys
-import signal
-import os
-import pandas as pd
 from typing import Dict, List, Any
 
-# --- Logging Configuration ---
+# Logging setup
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
 
-class TieredPollingTestSuite:
-    """
-    Runs a multi-phase test suite to find the optimal tiered polling configuration.
-    """
+
+class HitronTestSuite:
+    """Aggressive limit-finding test suite for Hitron CODA modems."""
 
     def __init__(self, simulator_script: str, host: str, quick_mode: bool = False):
         self.simulator_script = Path(simulator_script).resolve()
         if not self.simulator_script.exists():
-            raise FileNotFoundError(f"Simulator script not found: {self.simulator_script}")
-
+            raise FileNotFoundError(f"Simulator not found: {self.simulator_script}")
+        
         self.host = host
+        self.quick_mode = quick_mode
         self.is_running = True
-        self.test_results: List[Dict[str, Any]] = []
+        self.test_results = []
         
-        # --- Test Matrix Definition ---
-        # Defines the three phases of testing.
-        self.test_matrix = self.build_test_matrix(quick_mode)
-
-        # --- Results Directory ---
+        # Results directory
         self.start_time = datetime.now()
-        self.results_dir = Path.cwd() / f"tiered_test_{self.start_time.strftime('%Y%m%d_%H%M%S')}"
-        self.results_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = self.start_time.strftime('%Y%m%d_%H%M%S')
+        self.results_dir = Path.cwd() / f"hitron_limits_test_{timestamp}"
+        self.results_dir.mkdir(exist_ok=True)
         
-        # Add a file handler for logging to the results directory
-        log_file_handler = logging.FileHandler(self.results_dir / 'test_suite.log')
-        log_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        logger.addHandler(log_file_handler)
+        # File logging
+        log_file = self.results_dir / 'test_suite.log'
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(file_handler)
+        
+        # Build test matrix
+        self.tests = self._create_test_matrix()
+        
+        logger.info("Hitron CODA Test Suite Initialized")
+        logger.info(f"Results directory: {self.results_dir}")
+        logger.info(f"Test count: {len(self.tests)}")
+        logger.info(f"Quick mode: {quick_mode}")
 
-        logger.info(f"Results will be saved in: {self.results_dir}")
-
-
-    def build_test_matrix(self, quick_mode: bool) -> List[Dict[str, Any]]:
-        """Builds the multi-phase test plan."""
-        # Durations in seconds. Quick mode is shorter for rapid testing.
-        duration_long = "1800" if quick_mode else "3600"  # 30 min / 1 hr
-        duration_short = "900" if quick_mode else "1800" # 15 min / 30 min
-
-        test_matrix = [
-            # --- Phase 1: Baseline Individual Endpoint Performance ---
-            # How do the fast and slow endpoints perform in isolation?
+    def _create_test_matrix(self):
+        """Create the test matrix for aggressive limit finding."""
+        
+        # Test durations
+        if self.quick_mode:
+            short = 600   # 10 min
+            medium = 1200 # 20 min  
+            long = 1800   # 30 min
+        else:
+            short = 1800  # 30 min
+            medium = 3600 # 1 hour
+            long = 7200   # 2 hours
+        
+        tests = [
+            # PHASE 1: Fast Endpoint Limit Finding
             {
                 "phase": 1,
-                "name": "Baseline Fast Endpoints",
-                "args": [
-                    '--duration', duration_short, '--update-every', '10', 
-                    '--ofdm-poll-multiple', '9999', # Effectively disable OFDM
-                    '--serial'
-                ],
-                "description": "Tests only the 4 fast endpoints at a high frequency."
+                "name": "Baseline 15s",
+                "description": "Validate 15s works (proven from your data)",
+                "duration": short,
+                "update_every": 15,
+                "ofdm_multiple": 9999,  # Fast endpoints only
+                "fast_timeout": 3,
+                "ofdm_timeout": 8,
+                "max_retries": 1,
+                "expected": "Should work - proven config"
             },
             {
                 "phase": 1,
-                "name": "Baseline Slow Endpoints",
-                "args": [
-                    '--duration', duration_short, '--update-every', '45',
-                    '--ofdm-poll-multiple', '1', # Poll ONLY OFDM
-                    '--serial'
-                ],
-                "description": "Tests only the 2 slow endpoints at a safe interval."
+                "name": "Aggressive 10s",
+                "description": "10s fast polling - pushing limits",
+                "duration": medium,
+                "update_every": 10,
+                "ofdm_multiple": 9999,
+                "fast_timeout": 2,
+                "ofdm_timeout": 8,
+                "max_retries": 1,
+                "expected": "May show stress"
             },
-
-            # --- Phase 2: Validate Tiered Polling Concept ---
-            # Can we poll both tiers together stably at a conservative rate?
+            {
+                "phase": 1,
+                "name": "Extreme 8s",
+                "description": "8s polling - near theoretical limit",
+                "duration": medium,
+                "update_every": 8,
+                "ofdm_multiple": 9999,
+                "fast_timeout": 2,
+                "ofdm_timeout": 8,
+                "max_retries": 0,  # No retries
+                "expected": "Likely marginal"
+            },
+            {
+                "phase": 1,
+                "name": "Ultra 6s",
+                "description": "6s polling - beyond safe limits",
+                "duration": short,
+                "update_every": 6,
+                "ofdm_multiple": 9999,
+                "fast_timeout": 1,
+                "ofdm_timeout": 8,
+                "max_retries": 0,
+                "expected": "Likely to fail"
+            },
+            {
+                "phase": 1,
+                "name": "Breaking Point 5s",
+                "description": "5s polling - absolute limit test",
+                "duration": short,
+                "update_every": 5,
+                "ofdm_multiple": 9999,
+                "fast_timeout": 1,
+                "ofdm_timeout": 8,
+                "max_retries": 0,
+                "expected": "Designed to break"
+            },
+            
+            # PHASE 2: OFDM Endpoint Testing
             {
                 "phase": 2,
-                "name": "Conservative Tiered Polling",
-                "args": [
-                    '--duration', duration_long, '--update-every', '30',
-                    '--ofdm-poll-multiple', '5', # Poll OFDM every 2.5 mins
-                    '--serial'
-                ],
-                "description": "A safe, stable configuration to prove the concept."
-            },
-
-            # --- Phase 3: Aggressive Optimization ---
-            # Find the fastest stable polling rates.
-            {
-                "phase": 3,
-                "name": "Aggressive - 20s Fast / 5x OFDM",
-                "args": [
-                    '--duration', duration_long, '--update-every', '20',
-                    '--ofdm-poll-multiple', '5', # OFDM every 100s
-                    '--serial'
-                ],
-                "description": "Fast polling for primary data, moderate for OFDM."
+                "name": "OFDM Baseline 60s",
+                "description": "Conservative OFDM-only polling",
+                "duration": short,
+                "update_every": 60,
+                "ofdm_multiple": 1,  # OFDM every cycle
+                "fast_timeout": 3,
+                "ofdm_timeout": 8,
+                "max_retries": 1,
+                "expected": "Should be stable"
             },
             {
-                "phase": 3,
-                "name": "Aggressive - 15s Fast / 8x OFDM",
-                "args": [
-                    '--duration', duration_long, '--update-every', '15',
-                    '--ofdm-poll-multiple', '8', # OFDM every 120s
-                    '--serial'
-                ],
-                "description": "Very fast polling. Pushing the limits."
+                "phase": 2,
+                "name": "OFDM Aggressive 45s",
+                "description": "Faster OFDM polling",
+                "duration": medium,
+                "update_every": 45,
+                "ofdm_multiple": 1,
+                "fast_timeout": 3,
+                "ofdm_timeout": 8,
+                "max_retries": 1,
+                "expected": "Testing OFDM limits"
             },
-             {
-                "phase": 3,
-                "name": "Hyper - 10s Fast / 12x OFDM",
-                "args": [
-                    '--duration', duration_long, '--update-every', '10',
-                    '--ofdm-poll-multiple', '12', # OFDM every 120s
-                    '--serial'
-                ],
-                "description": "Bleeding edge. High chance of instability."
+            {
+                "phase": 2,
+                "name": "OFDM Breaking 30s",
+                "description": "Very aggressive OFDM",
+                "duration": short,
+                "update_every": 30,
+                "ofdm_multiple": 1,
+                "fast_timeout": 3,
+                "ofdm_timeout": 8,
+                "max_retries": 1,
+                "expected": "Likely too fast for OFDM"
             },
+            
+            # PHASE 3: Optimal Combinations
+            {
+                "phase": 3,
+                "name": "Optimal Tiered",
+                "description": "Best fast polling + smart OFDM scheduling",
+                "duration": long,
+                "update_every": 10,  # Adjust based on Phase 1
+                "ofdm_multiple": 30, # 10s * 30 = 5min OFDM
+                "fast_timeout": 2,
+                "ofdm_timeout": 8,
+                "max_retries": 1,
+                "expected": "Optimal performance"
+            },
+            {
+                "phase": 3,
+                "name": "Extended Validation",
+                "description": "Long-term stability test",
+                "duration": long if self.quick_mode else long * 2,
+                "update_every": 12,  # Conservative
+                "ofdm_multiple": 25, # 12s * 25 = 5min OFDM
+                "fast_timeout": 2,
+                "ofdm_timeout": 8,
+                "max_retries": 1,
+                "expected": "Sustained stability"
+            }
         ]
-        return test_matrix
+        
+        return tests
 
     async def run_all_tests(self):
-        """Executes all tests defined in the test matrix."""
-        logger.info(f"Starting test suite with {len(self.test_matrix)} tests...")
-        for i, test in enumerate(self.test_matrix):
+        """Execute all tests in the matrix."""
+        logger.info(f"Starting test suite: {len(self.tests)} tests")
+        total_duration = sum(t['duration'] for t in self.tests) / 60
+        logger.info(f"Estimated duration: {total_duration:.0f} minutes")
+        
+        for i, test in enumerate(self.tests, 1):
             if not self.is_running:
-                logger.warning("Test suite stopped prematurely.")
+                logger.warning("Test suite stopped by user")
                 break
             
-            logger.info(f"\n" + "="*80)
-            logger.info(f"Running Test {i+1}/{len(self.test_matrix)}: [Phase {test['phase']}] {test['name']}")
-            logger.info(f"Description: {test['description']}")
-            logger.info(f"Arguments: {' '.join(test['args'])}")
-            logger.info("="*80)
+            logger.info(f"\n{'='*60}")
+            logger.info(f"TEST {i}/{len(self.tests)}: {test['name']}")
+            logger.info(f"Phase {test['phase']}: {test['description']}")
+            logger.info(f"Expected: {test['expected']}")
+            logger.info(f"Duration: {test['duration']/60:.0f} minutes")
+            logger.info(f"{'='*60}")
             
-            await asyncio.sleep(2) # Short pause before starting
-
-            result = await self.run_single_test(test)
+            await asyncio.sleep(2)  # Brief pause
+            
+            result = await self._run_test(test)
             self.test_results.append(result)
-            self.save_summary_results() # Save progress after each test
+            
+            self._save_progress()
+            self._analyze_result(result)
+            
+            # Pause between tests
+            if i < len(self.tests) and self.is_running:
+                logger.info("Brief pause before next test...")
+                for countdown in range(10, 0, -1):
+                    if not self.is_running:
+                        break
+                    logger.info(f"Next test in {countdown}s...")
+                    await asyncio.sleep(1)
+        
+        logger.info("\nAll tests completed!")
+        self._generate_final_analysis()
 
-        logger.info("\nAll tests completed.")
-        self.analyze_and_recommend()
-
-    async def run_single_test(self, test_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Runs the simulator script as a subprocess for a single test."""
-        command = [
+    async def _run_test(self, test):
+        """Run a single test with proper real-time output handling."""
+        start_time = time.time()
+        
+        # Build command
+        cmd = [
             sys.executable, str(self.simulator_script),
             '--host', self.host,
-        ] + test_config['args']
-
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode != 0:
-            logger.error(f"Test '{test_config['name']}' failed with return code {process.returncode}")
-            logger.error(f"Stderr: {stderr.decode().strip()}")
-
-        # Parse the JSON report from stdout
-        report = {}
-        try:
-            # The report is the last JSON object in the output
-            output_lines = stdout.decode().strip().split('\n')
-            for line in reversed(output_lines):
-                if line.startswith('{') and line.endswith('}'):
-                    report = json.loads(line)
-                    break
-        except (json.JSONDecodeError, IndexError) as e:
-            logger.error(f"Failed to parse JSON report for test '{test_config['name']}': {e}")
-            logger.error(f"Full stdout: {stdout.decode()}")
-
-        result = {
-            "phase": test_config['phase'],
-            "name": test_config['name'],
-            "args": ' '.join(test_config['args']),
-            "success_rate": report.get("cycle_success_rate", 0),
-            "avg_collection_time": report.get("avg_collection_time", 0),
-            "failed_cycles": report.get("failed_cycles", -1),
-        }
-        return result
-
-    def save_summary_results(self):
-        """Saves the high-level test results to a CSV file."""
-        if not self.test_results:
-            return
-            
-        filepath = self.results_dir / "summary_results.csv"
-        with open(filepath, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=self.test_results[0].keys())
-            writer.writeheader()
-            writer.writerows(self.test_results)
-        logger.info(f"Summary results updated at: {filepath}")
-
-    def analyze_and_recommend(self):
-        """Analyzes all test results and provides a final recommendation."""
-        logger.info("\n\n" + "#"*80)
-        logger.info("                 PERFORMANCE ANALYSIS AND RECOMMENDATION")
-        logger.info("#"*80)
-
-        if not self.test_results:
-            logger.warning("No test results to analyze.")
-            return
-
-        df = pd.DataFrame(self.test_results)
-        df = df.sort_values(by=['phase', 'name'])
-        
-        logger.info("\n--- Overall Test Results ---\n")
-        print(df.to_string(index=False))
-        
-        # --- Recommendation Logic ---
-        # Find the fastest test from Phase 3 that has a >= 99.5% success rate
-        stable_tests = df[
-            (df['phase'] == 3) & 
-            (df['success_rate'] >= 99.5)
+            '--duration', str(test['duration']),
+            '--update-every', str(test['update_every']),
+            '--ofdm-poll-multiple', str(test['ofdm_multiple']),
+            '--fast-endpoint-timeout', str(test['fast_timeout']),
+            '--ofdm-endpoint-timeout', str(test['ofdm_timeout']),
+            '--max-retries', str(test['max_retries']),
+            '--serial'
         ]
-
-        recommendation = "No stable aggressive configuration found. Stick with the conservative settings."
-        recommended_config = {}
-
-        if not stable_tests.empty:
-            # Find the best stable test. 'Best' is the one with the lowest update_every.
-            # We extract update_every from the 'args' string for sorting.
-            stable_tests['update_every'] = stable_tests['args'].str.extract(r'--update-every (\d+)').astype(int)
-            best_test = stable_tests.sort_values(by='update_every', ascending=True).iloc[0]
-
-            recommendation = (
-                f"The best performing stable configuration is: '{best_test['name']}'\n"
-                f"It achieved a {best_test['success_rate']:.2f}% success rate with an average collection time of "
-                f"{best_test['avg_collection_time']:.3f}s."
+        
+        logger.info(f"Command: {' '.join(cmd)}")
+        print("\n🔄 SIMULATOR OUTPUT:")
+        print("=" * 60)
+        
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT  # Merge stderr into stdout
             )
             
-            # Extract config values for the final recommendation block
-            ue = best_test['update_every']
-            opm = int(best_test['args'].split('--ofdm-poll-multiple ')[1].split(' ')[0])
-            recommended_config = {
-                'update_every': ue,
-                'ofdm_poll_multiple': opm,
-                'ofdm_effective_interval': ue * opm,
+            all_lines = []
+            json_report = {}
+            
+            # Read all output in real-time
+            while True:
+                line_bytes = await process.stdout.readline()
+                if not line_bytes:
+                    break
+                
+                line = line_bytes.decode('utf-8').rstrip()
+                all_lines.append(line)
+                
+                if line.strip():
+                    # Check for progress indicators and display them immediately
+                    if any(indicator in line for indicator in ['[█', 'Cycles:', '%', 'ms', 'Remaining:']):
+                        # This is a progress line - show it with carriage return
+                        clean_line = line.replace('\r', '').strip()
+                        if clean_line:
+                            print(f"\r{clean_line}", end='', flush=True)
+                    elif 'INFO' in line and ('Starting' in line or 'Target end time' in line or 'Press Ctrl+C' in line):
+                        # Show important startup messages
+                        print(f"{line}")
+                    elif 'Enhanced Simulator initialized:' in line:
+                        print(f"{line}")
+                    elif any(config in line for config in ['Collection mode:', 'Update interval:', 'OFDM poll multiple:', 'timeout:', 'Max retries:']):
+                        # Show configuration lines
+                        print(f"{line}")
+                    elif 'SIMULATION FINAL REPORT' in line or 'Configuration:' in line or 'Cycle Results:' in line:
+                        # Show final report headers
+                        print(f"\n{line}")
+                    elif any(result in line for result in ['Success Rate:', 'Collection Time:', 'Assessment:']):
+                        # Show final results
+                        print(f"{line}")
+                
+                # Try to capture JSON report
+                if line.startswith('{') and line.endswith('}'):
+                    try:
+                        json_report.update(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+            
+            await process.wait()
+            
+            duration = time.time() - start_time
+            
+            print()  # New line after output
+            print("=" * 60)
+            logger.info(f"Test completed in {duration:.1f}s")
+            
+            result = {
+                "phase": test['phase'],
+                "name": test['name'],
+                "description": test['description'],
+                "command": ' '.join(cmd),
+                "return_code": process.returncode,
+                "success": process.returncode == 0,
+                "duration": duration,
+                "simulator_report": json_report,
+                "output": '\n'.join(all_lines)
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Test failed: {e}")
+            return {
+                "phase": test['phase'],
+                "name": test['name'],
+                "success": False,
+                "error": str(e),
+                "duration": time.time() - start_time
             }
 
-        else:
-            # Fallback to conservative if no aggressive test was stable
-             conservative_test = df[df['name'] == 'Conservative Tiered Polling'].iloc[0]
-             if conservative_test['success_rate'] >= 99.5:
-                 ue = int(conservative_test['args'].split('--update-every ')[1].split(' ')[0])
-                 opm = int(conservative_test['args'].split('--ofdm-poll-multiple ')[1].split(' ')[0])
-                 recommended_config = {
-                    'update_every': ue,
-                    'ofdm_poll_multiple': opm,
-                    'ofdm_effective_interval': ue * opm,
-                 }
-                 recommendation = (
-                    "No aggressive configuration was stable. Falling back to the proven conservative settings."
-                 )
-
-
-        logger.info("\n\n--- RECOMMENDATION ---")
-        logger.info(recommendation)
-
-        if recommended_config:
-            logger.info("\n" + "-"*40)
-            logger.info("  Recommended hitron_coda.conf settings:")
-            logger.info(f"    update_every: {recommended_config['update_every']}")
-            logger.info(f"    ofdm_poll_multiple: {recommended_config['ofdm_poll_multiple']}")
-            logger.info("  (This will poll fast endpoints every "
-                        f"{recommended_config['update_every']}s and slow OFDM endpoints every "
-                        f"{recommended_config['ofdm_effective_interval']}s)")
-            logger.info("-" * 40)
+    def _analyze_result(self, result):
+        """Analyze and display test result."""
+        if not result['success'] or not result.get('simulator_report'):
+            logger.error(f"❌ {result['name']}: FAILED")
+            return
         
-        logger.info(f"\nFull summary saved in {self.results_dir / 'summary_results.csv'}")
+        report = result['simulator_report']
+        success_rate = report.get('cycle_success_rate', 0)
+        failed_cycles = report.get('failed_cycles', 0)
+        consecutive_failures = report.get('consecutive_failures', 0)
+        avg_time = report.get('avg_collection_time', 0)
+        
+        # Failure detection
+        failures = []
+        if failed_cycles >= 2:
+            failures.append(f"{failed_cycles} failed cycles")
+        
+        # Calculate unavailability (consecutive failures * interval)
+        update_every = self._extract_update_every(result['command'])
+        unavailable_time = consecutive_failures * update_every
+        if unavailable_time >= 30:
+            failures.append(f"{unavailable_time}s unavailable")
+        
+        if success_rate < 85:
+            failures.append(f"low success rate ({success_rate:.1f}%)")
+        
+        # Determine status
+        if failures:
+            status = f"❌ FAILED ({', '.join(failures)})"
+            logger.error(status)
+        elif success_rate >= 99:
+            status = "✅ EXCELLENT"
+            logger.info(status)
+        elif success_rate >= 95:
+            status = "✅ GOOD"
+            logger.info(status)
+        elif success_rate >= 90:
+            status = "⚠️ MARGINAL"
+            logger.warning(status)
+        else:
+            status = "❌ POOR"
+            logger.error(status)
+        
+        logger.info(f"   Success Rate: {success_rate:.1f}%")
+        logger.info(f"   Failed Cycles: {failed_cycles}")
+        logger.info(f"   Consecutive Failures: {consecutive_failures}")
+        logger.info(f"   Avg Collection Time: {avg_time:.2f}s")
+
+    def _extract_update_every(self, command):
+        """Extract update_every from command string."""
+        parts = command.split()
+        try:
+            idx = parts.index('--update-every')
+            return int(parts[idx + 1])
+        except (ValueError, IndexError):
+            return 60
+
+    def _save_progress(self):
+        """Save current progress."""
+        progress_file = self.results_dir / "progress.json"
+        with open(progress_file, 'w') as f:
+            json.dump({
+                "start_time": self.start_time.isoformat(),
+                "current_time": datetime.now().isoformat(),
+                "completed": len(self.test_results),
+                "total": len(self.tests),
+                "results": self.test_results
+            }, f, indent=2)
+        
+        # CSV summary
+        if self.test_results:
+            csv_file = self.results_dir / "summary.csv"
+            with open(csv_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Phase', 'Test', 'Success', 'Success Rate %', 'Failed Cycles', 'Avg Time'])
+                
+                for result in self.test_results:
+                    if result['success'] and result.get('simulator_report'):
+                        report = result['simulator_report']
+                        writer.writerow([
+                            result['phase'],
+                            result['name'],
+                            'Yes',
+                            f"{report.get('cycle_success_rate', 0):.1f}",
+                            report.get('failed_cycles', 0),
+                            f"{report.get('avg_collection_time', 0):.2f}"
+                        ])
+                    else:
+                        writer.writerow([
+                            result['phase'],
+                            result['name'],
+                            'No',
+                            'N/A',
+                            'N/A',
+                            'N/A'
+                        ])
+
+    def _generate_final_analysis(self):
+        """Generate final analysis and recommendations."""
+        logger.info("\n" + "="*60)
+        logger.info("FINAL ANALYSIS")
+        logger.info("="*60)
+        
+        if not self.test_results:
+            logger.warning("No results to analyze")
+            return
+        
+        successful = [r for r in self.test_results if r['success'] and r.get('simulator_report')]
+        
+        logger.info(f"Total tests: {len(self.test_results)}")
+        logger.info(f"Successful tests: {len(successful)}")
+        
+        if not successful:
+            logger.error("No successful tests to analyze")
+            return
+        
+        # Phase analysis
+        phases = {}
+        for test in successful:
+            phase = test['phase']
+            if phase not in phases:
+                phases[phase] = []
+            phases[phase].append(test)
+        
+        logger.info("\nPhase Results:")
+        for phase in sorted(phases.keys()):
+            tests = phases[phase]
+            logger.info(f"  Phase {phase}: {len(tests)} successful tests")
+            for test in tests:
+                report = test['simulator_report']
+                success_rate = report.get('cycle_success_rate', 0)
+                avg_time = report.get('avg_collection_time', 0)
+                logger.info(f"    {test['name']:20} | {success_rate:5.1f}% | {avg_time:5.2f}s")
+        
+        # Find optimal configs
+        stable = [t for t in successful if t['simulator_report'].get('cycle_success_rate', 0) >= 95]
+        
+        if stable:
+            fastest = min(stable, key=lambda t: t['simulator_report'].get('avg_collection_time', float('inf')))
+            most_reliable = max(stable, key=lambda t: t['simulator_report'].get('cycle_success_rate', 0))
+            
+            logger.info(f"\nOptimal Configurations:")
+            logger.info(f"  Fastest Stable: {fastest['name']}")
+            logger.info(f"    Success: {fastest['simulator_report']['cycle_success_rate']:.1f}%")
+            logger.info(f"    Time: {fastest['simulator_report']['avg_collection_time']:.2f}s")
+            
+            logger.info(f"  Most Reliable: {most_reliable['name']}")
+            logger.info(f"    Success: {most_reliable['simulator_report']['cycle_success_rate']:.1f}%")
+            logger.info(f"    Time: {most_reliable['simulator_report']['avg_collection_time']:.2f}s")
+        
+        logger.info(f"\nResults saved in: {self.results_dir}")
+
+
+def signal_handler(test_suite):
+    """Handle signals gracefully."""
+    def handler(signum, frame):
+        logger.info(f"Received signal {signum}, stopping...")
+        test_suite.is_running = False
+        raise KeyboardInterrupt()
+    return handler
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Automated test suite for Hitron CODA tiered polling optimization.")
-    parser.add_argument('--simulator', default='netdata_simulator.py', help="Path to the netdata_simulator.py script.")
-    parser.add_argument('--host', default='https://192.168.100.1', help="IP address of the Hitron modem.")
-    parser.add_argument('--quick', action='store_true', help="Run shorter tests for a quick evaluation.")
-    args = parser.parse_args()
-
-    test_suite = TieredPollingTestSuite(
-        simulator_script=args.simulator,
-        host=args.host,
-        quick_mode=args.quick
-    )
-
-    def signal_handler(signum, frame):
-        logger.warning(f"Interrupt signal ({signum}) received. Shutting down gracefully...")
-        test_suite.is_running = False
+    import argparse
     
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
+    parser = argparse.ArgumentParser(description='Hitron CODA Aggressive Limit Testing')
+    parser.add_argument('--simulator', default='netdata_simulator.py',
+                       help='Path to simulator script')
+    parser.add_argument('--host', default='https://192.168.100.1',
+                       help='Modem host URL')
+    parser.add_argument('--quick', action='store_true',
+                       help='Run shorter tests')
+    
+    args = parser.parse_args()
+    
+    if not Path(args.simulator).exists():
+        logger.error(f"Simulator not found: {args.simulator}")
+        sys.exit(1)
+    
     try:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(test_suite.run_all_tests())
+        suite = HitronTestSuite(args.simulator, args.host, args.quick)
+        
+        # Signal handling
+        handler = signal_handler(suite)
+        signal.signal(signal.SIGINT, handler)
+        signal.signal(signal.SIGTERM, handler)
+        
+        # Run tests
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(suite.run_all_tests())
+        finally:
+            loop.close()
+            
     except KeyboardInterrupt:
-        logger.info("Test suite stopped by user.")
-    finally:
-        logger.info("Final analysis...")
-        if not test_suite.test_results:
-             logger.warning("No tests were completed.")
-        elif len(test_suite.test_results) < len(test_suite.test_matrix):
-             logger.warning("Test suite did not complete all tests. Analysis is based on partial results.")
-             test_suite.analyze_and_recommend()
+        logger.info("Test suite interrupted")
+    except Exception as e:
+        logger.error(f"Test suite failed: {e}")
+        sys.exit(1)
+    
+    logger.info("Test suite completed!")
 
 
 if __name__ == "__main__":
-    import argparse
     main()
-
