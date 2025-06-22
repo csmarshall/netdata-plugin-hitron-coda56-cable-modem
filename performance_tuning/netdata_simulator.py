@@ -35,26 +35,37 @@ class NetdataModemSimulator:
     def __init__(self, 
                  modem_host: str = "https://192.168.100.1",
                  update_every: int = 20,
-                 timeout: Optional[str] = None,
+                 endpoint_timeout: Optional[str] = None,
+                 collection_timeout: Optional[int] = None,
                  max_retries: int = 3,
                  test_duration: int = 300,  # 5 minutes default
-                 use_parallel: bool = False,
+                 parallel_collection: bool = False,
+                 inter_request_delay: float = 0.0,
                  endpoints_to_test: Optional[List[str]] = None):
         
         self.modem_host = modem_host
         self.update_every = update_every
         self.max_retries = max_retries
         self.test_duration = test_duration
-        self.use_parallel = use_parallel
+        self.parallel_collection = parallel_collection
+        self.inter_request_delay = inter_request_delay
         
         # Smart timeout handling: auto-detect ms vs seconds
-        if timeout is None:
+        if endpoint_timeout is None:
             # Auto-calculate timeout like the plugin does (70% of update_every, min 5s, max 15s)
-            self.timeout = max(5, min(15, int(update_every * 0.7)))
+            self.endpoint_timeout = max(5, min(15, int(update_every * 0.7)))
             self.timeout_source = "auto-calculated"
         else:
-            self.timeout = self._parse_timeout_value(timeout)
+            self.endpoint_timeout = self._parse_timeout_value(endpoint_timeout)
             self.timeout_source = "user-specified"
+        
+        # Collection timeout: auto-calculate if not specified (like the plugin does)
+        if collection_timeout is None:
+            self.collection_timeout = int(self.update_every * 0.9)
+            self.collection_timeout_source = "auto-calculated"
+        else:
+            self.collection_timeout = collection_timeout
+            self.collection_timeout_source = "user-specified"
             
         # Default endpoints (same as plugin)
         self.all_endpoints = [
@@ -96,9 +107,12 @@ class NetdataModemSimulator:
         logger.info(f"Initialized Netdata simulation:")
         logger.info(f"  Host: {self.modem_host}")
         logger.info(f"  Update interval: {self.update_every}s")
-        logger.info(f"  Timeout: {self.timeout}s ({self.timeout_source})") 
+        logger.info(f"  Endpoint timeout: {self.endpoint_timeout}s ({self.timeout_source})") 
+        logger.info(f"  Collection timeout: {self.collection_timeout}s ({self.collection_timeout_source})")
         logger.info(f"  Max retries: {self.max_retries}")
-        logger.info(f"  Parallel mode: {self.use_parallel}")
+        logger.info(f"  Collection mode: {'PARALLEL' if self.parallel_collection else 'SERIAL'}")
+        if not self.parallel_collection and self.inter_request_delay > 0:
+            logger.info(f"  Inter-request delay: {self.inter_request_delay}s (SERIAL mode only)")
         logger.info(f"  Endpoints: {', '.join(self.endpoints_to_test)}")
         logger.info(f"  Test duration: {self.test_duration}s")
         logger.info(f"  Expected cycles: ~{int(self.test_duration / self.update_every)}")
@@ -293,7 +307,7 @@ class NetdataModemSimulator:
                     async with session.get(
                         url,
                         ssl=self.ssl_context,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout)
+                        timeout=aiohttp.ClientTimeout(total=self.endpoint_timeout)
                     ) as response:
                         content = await response.read()
                         response_time = time.time() - start_time
@@ -349,7 +363,7 @@ class NetdataModemSimulator:
             'cycle_id': cycle_id,
             'attempt': max_attempts,
             'success': False,
-            'response_time': self.timeout,
+            'response_time': self.endpoint_timeout,
             'status_code': 'FAILED',
             'data_size': 0,
             'data_valid': False,
@@ -358,13 +372,13 @@ class NetdataModemSimulator:
         }
 
     async def _collect_data_serial(self, cycle_id: int) -> Dict:
-        """Collect data serially (like current plugin)."""
+        """Collect data serially (like current plugin when parallel_collection=false)."""
         cycle_start = time.time()
         results = []
         
         logger.info(f"Cycle {cycle_id}: Starting SERIAL collection")
         
-        for endpoint in self.endpoints_to_test:
+        for i, endpoint in enumerate(self.endpoints_to_test):
             result = await self._make_request_with_retry(endpoint, cycle_id)
             results.append(result)
             
@@ -372,6 +386,11 @@ class NetdataModemSimulator:
             # Show actual response time, not just timeout value
             actual_time_ms = result['response_time'] * 1000
             logger.info(f"  {status} {endpoint}: {actual_time_ms:.0f}ms")
+            
+            # Add inter-request delay if configured (mimics plugin behavior)
+            if i < len(self.endpoints_to_test) - 1 and self.inter_request_delay > 0:
+                logger.debug(f"Inter-request delay: {self.inter_request_delay}s")
+                await asyncio.sleep(self.inter_request_delay)
         
         cycle_time = time.time() - cycle_start
         
@@ -387,7 +406,7 @@ class NetdataModemSimulator:
         }
 
     async def _collect_data_parallel(self, cycle_id: int) -> Dict:
-        """Collect data in parallel (optimized version)."""
+        """Collect data in parallel (mimics plugin when parallel_collection=true)."""
         cycle_start = time.time()
         
         logger.info(f"Cycle {cycle_id}: Starting PARALLEL collection")
@@ -410,7 +429,7 @@ class NetdataModemSimulator:
                     'cycle_id': cycle_id,
                     'success': False,
                     'error': str(result),
-                    'response_time': self.timeout,
+                    'response_time': self.endpoint_timeout,
                     'timestamp': datetime.now()
                 })
             else:
@@ -437,7 +456,7 @@ class NetdataModemSimulator:
         self.active_cycles[cycle_id] = time.time()
         
         try:
-            if self.use_parallel:
+            if self.parallel_collection:
                 cycle_result = await self._collect_data_parallel(cycle_id)
             else:
                 cycle_result = await self._collect_data_serial(cycle_id)
@@ -527,10 +546,13 @@ class NetdataModemSimulator:
         # Configuration
         print(f"\nCONFIGURATION:")
         print(f"  Host: {self.modem_host}")
-        print(f"  Collection Method: {'PARALLEL' if self.use_parallel else 'SERIAL'}")
+        print(f"  Collection Method: {'PARALLEL' if self.parallel_collection else 'SERIAL'}")
         print(f"  Update Interval: {self.update_every}s")
-        print(f"  Request Timeout: {self.timeout}s ({self.timeout_source})")
+        print(f"  Endpoint Timeout: {self.endpoint_timeout}s ({self.timeout_source})")
+        print(f"  Collection Timeout: {self.collection_timeout}s ({self.collection_timeout_source})")
         print(f"  Max Retries: {self.max_retries}")
+        if not self.parallel_collection and self.inter_request_delay > 0:
+            print(f"  Inter-request Delay: {self.inter_request_delay}s")
         print(f"  Endpoints: {len(self.endpoints_to_test)} ({', '.join(self.endpoints_to_test)})")
         
         # Overall statistics
@@ -548,6 +570,7 @@ class NetdataModemSimulator:
         print(f"  Fastest Cycle: {min(cycle_times):.1f}s") 
         print(f"  Slowest Cycle: {max(cycle_times):.1f}s")
         print(f"  Cycles > Update Interval: {sum(1 for ct in cycle_times if ct > self.update_every)}")
+        print(f"  Cycles > Collection Timeout: {sum(1 for ct in cycle_times if ct > self.collection_timeout)}")
         print(f"  Average Success Rate: {statistics.mean(success_rates):.1f}%")
         
         # Cycle time breakdown analysis
@@ -646,29 +669,56 @@ class NetdataModemSimulator:
         print(f"  Cycles with Overlaps: {overlapping_periods}")
         print(f"  Overlap Rate: {(overlapping_periods / len(self.cycle_results)) * 100:.1f}%")
         
+        # Configuration validation (like the plugin does)
+        print(f"\nCONFIGURATION VALIDATION:")
+        avg_cycle_time = statistics.mean(cycle_times)
+        
+        # Check collection timeout vs update interval
+        if self.collection_timeout >= self.update_every:
+            print(f"  ⚠️  WARNING: Collection timeout ({self.collection_timeout}s) >= update interval ({self.update_every}s)")
+            print(f"      This can cause overlapping collections!")
+            print(f"      Recommended: collection_timeout < update_every")
+        else:
+            print(f"  ✅ Good: Collection timeout ({self.collection_timeout}s) < update interval ({self.update_every}s)")
+        
+        # Check if serial mode timing fits within collection timeout
+        if not self.parallel_collection:
+            estimated_serial_time = (len(self.endpoints_to_test) * 
+                                    (self.endpoint_timeout + self.inter_request_delay))
+            if estimated_serial_time > self.collection_timeout:
+                print(f"  ⚠️  WARNING: Estimated serial time ({estimated_serial_time:.1f}s) > collection timeout ({self.collection_timeout}s)")
+                print(f"      Consider: increasing collection_timeout or reducing endpoint_timeout")
+            else:
+                print(f"  ✅ Good: Estimated serial time ({estimated_serial_time:.1f}s) fits in collection timeout")
+        
         # Recommendations
         print(f"\nRECOMMENDATIONS:")
-        avg_cycle_time = statistics.mean(cycle_times)
         
         if avg_cycle_time > self.update_every:
             print(f"  ⚠️  ISSUE: Average cycle time ({avg_cycle_time:.1f}s) > update interval ({self.update_every}s)")
             print(f"      This causes overlapping collections and resource contention!")
             print(f"      Recommended solutions:")
-            if not self.use_parallel:
-                print(f"        1. Use PARALLEL collection (would reduce time by ~{len(self.endpoints_to_test)}x)")
+            if not self.parallel_collection:
+                print(f"        1. Enable parallel collection (would reduce time by ~{len(self.endpoints_to_test)}x)")
             print(f"        2. Increase update_every to {int(avg_cycle_time * 1.2)}s")
             print(f"        3. Reduce endpoints (test with just dsinfo.asp + usinfo.asp)")
-            print(f"        4. Increase timeout to {int(self.timeout * 1.5 * 1000)}ms ({int(self.timeout * 1.5)}s)")
+            print(f"        4. Increase endpoint_timeout to {int(self.endpoint_timeout * 1.5)}s")
         else:
             print(f"  ✅ Good: Cycle time ({avg_cycle_time:.1f}s) < update interval ({self.update_every}s)")
-            if self.use_parallel:
+            if self.parallel_collection:
                 print(f"      Parallel collection is working well!")
             else:
                 print(f"      Serial collection is fast enough for this interval")
         
         if statistics.mean(success_rates) < 95:
             print(f"  ⚠️  ISSUE: Low success rate ({statistics.mean(success_rates):.1f}%)")
-            print(f"      Consider: increasing timeout, reducing max_retries, checking network")
+            print(f"      Consider: increasing endpoint_timeout, reducing max_retries, checking network")
+        
+        # Auto-calculated retries comparison
+        calculated_retries = max(1, int(self.collection_timeout / self.endpoint_timeout))
+        if self.max_retries != calculated_retries:
+            print(f"  💡 INFO: Current max_retries ({self.max_retries}) differs from auto-calculated ({calculated_retries})")
+            print(f"      Auto-calculation: collection_timeout ({self.collection_timeout}s) ÷ endpoint_timeout ({self.endpoint_timeout}s) = {calculated_retries}")
         
         self._create_visualization()
         self._save_detailed_csv()
@@ -691,6 +741,8 @@ class NetdataModemSimulator:
         ax1.plot(start_times, cycle_times, 'b-', linewidth=2, label='Cycle Time')
         ax1.axhline(y=self.update_every, color='r', linestyle='--', 
                    label=f'Update Interval ({self.update_every}s)')
+        ax1.axhline(y=self.collection_timeout, color='orange', linestyle='--', 
+                   label=f'Collection Timeout ({self.collection_timeout}s)')
         ax1.set_xlabel('Time')
         ax1.set_ylabel('Cycle Time (seconds)')
         ax1.set_title('Collection Cycle Times')
@@ -713,6 +765,8 @@ class NetdataModemSimulator:
         ax3.hist(cycle_times, bins=20, alpha=0.7, color='blue', edgecolor='black')
         ax3.axvline(x=self.update_every, color='r', linestyle='--', 
                    label=f'Update Interval ({self.update_every}s)')
+        ax3.axvline(x=self.collection_timeout, color='orange', linestyle='--', 
+                   label=f'Collection Timeout ({self.collection_timeout}s)')
         ax3.set_xlabel('Cycle Time (seconds)')
         ax3.set_ylabel('Frequency')
         ax3.set_title('Cycle Time Distribution')
@@ -735,20 +789,22 @@ class NetdataModemSimulator:
             plt.setp(ax4.get_xticklabels(), rotation=45)
         
         # Overall title
-        method = "PARALLEL" if self.use_parallel else "SERIAL"
-        timeout_display = f"{self.timeout}s ({self.timeout_source})"
+        method = "PARALLEL" if self.parallel_collection else "SERIAL"
+        endpoint_timeout_display = f"{self.endpoint_timeout}s ({self.timeout_source})"
+        collection_timeout_display = f"{self.collection_timeout}s ({self.collection_timeout_source})"
         fig.suptitle(f'Netdata Hitron Plugin Simulation - {method} Collection\n'
-                    f'Update Every: {self.update_every}s, Timeout: {timeout_display}, '
-                    f'Endpoints: {len(self.endpoints_to_test)}', fontsize=14)
+                    f'Update Every: {self.update_every}s, Endpoint Timeout: {endpoint_timeout_display}, '
+                    f'Collection Timeout: {collection_timeout_display}, Endpoints: {len(self.endpoints_to_test)}', fontsize=14)
         
         plt.tight_layout()
         
         # Save with descriptive filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        method_str = "parallel" if self.use_parallel else "serial"
-        timeout_str = f"{int(self.timeout * 1000)}ms" if self.timeout < 1 else f"{int(self.timeout)}s"
+        method_str = "parallel" if self.parallel_collection else "serial"
+        endpoint_timeout_str = f"{int(self.endpoint_timeout * 1000)}ms" if self.endpoint_timeout < 1 else f"{int(self.endpoint_timeout)}s"
         filename = (f'netdata_simulation_{timestamp}_{method_str}_'
-                   f'interval{self.update_every}_timeout{timeout_str}_'
+                   f'interval{self.update_every}_etimeout{endpoint_timeout_str}_'
+                   f'ctimeout{self.collection_timeout}_'
                    f'endpoints{len(self.endpoints_to_test)}.png')
         
         plt.savefig(filename, dpi=300, bbox_inches='tight')
@@ -758,10 +814,11 @@ class NetdataModemSimulator:
     def _save_detailed_csv(self):
         """Save detailed results to CSV for further analysis."""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        method_str = "parallel" if self.use_parallel else "serial"
-        timeout_str = f"{int(self.timeout * 1000)}ms" if self.timeout < 1 else f"{int(self.timeout)}s"
+        method_str = "parallel" if self.parallel_collection else "serial"
+        endpoint_timeout_str = f"{int(self.endpoint_timeout * 1000)}ms" if self.endpoint_timeout < 1 else f"{int(self.endpoint_timeout)}s"
         filename = (f'netdata_simulation_data_{timestamp}_{method_str}_'
-                   f'interval{self.update_every}_timeout{timeout_str}.csv')
+                   f'interval{self.update_every}_etimeout{endpoint_timeout_str}_'
+                   f'ctimeout{self.collection_timeout}.csv')
         
         with open(filename, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
@@ -798,22 +855,29 @@ async def main():
     parser = argparse.ArgumentParser(
         description='Simulate Netdata Hitron CODA plugin behavior',
         epilog='''
+Configuration Options (matching hitron_coda.chart.py):
+
 Timeout Values:
-  1. Explicit units (recommended):
-     --timeout 5s       # 5 seconds
-     --timeout 1500ms   # 1.5 seconds (1500 milliseconds)
-     --timeout 30s      # 30 seconds
-     --timeout 500ms    # 0.5 seconds (500 milliseconds)
-  
-  2. Numeric (auto-detection):
-     --timeout 5        # 5 seconds (< 1000)
-     --timeout 1500     # 1.5 seconds (>= 1000, treated as ms)
-     --timeout 5000     # 5 seconds (5000ms)
-  
+  --endpoint-timeout 5s      # 5 seconds (per-endpoint timeout)
+  --endpoint-timeout 1500ms  # 1.5 seconds (1500 milliseconds)
+  --collection-timeout 54    # 54 seconds (overall collection timeout)
+
+Collection Modes:
+  --parallel-collection      # Enable parallel collection (default: serial)
+  --inter-request-delay 2.0  # Delay between endpoints in serial mode
+
 Examples:
-  python script.py --timeout 5s --parallel
-  python script.py --timeout 1500ms --update-every 10
-  python script.py --timeout 30s --minimal
+  # Conservative serial mode (like plugin default)
+  python netdata_simulator.py --endpoint-timeout 6s --collection-timeout 54 --inter-request-delay 1.0
+
+  # High-performance parallel mode
+  python netdata_simulator.py --endpoint-timeout 4s --parallel-collection --update-every 30
+
+  # Ultra-conservative for sensitive modems
+  python netdata_simulator.py --endpoint-timeout 10s --collection-timeout 180 --inter-request-delay 3.0 --update-every 300
+
+  # Minimal endpoints for testing
+  python netdata_simulator.py --minimal --parallel-collection --update-every 20
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -822,14 +886,18 @@ Examples:
                        help='Modem host URL')
     parser.add_argument('--update-every', type=int, default=20,
                        help='Update interval in seconds (like Netdata config)')
-    parser.add_argument('--timeout', type=str, 
-                       help='Request timeout: "5s", "1500ms", or numeric (<1000=seconds, >=1000=milliseconds). Auto-calculated if not specified')
+    parser.add_argument('--endpoint-timeout', type=str, 
+                       help='Per-endpoint timeout: "5s", "1500ms", or numeric. Auto-calculated if not specified')
+    parser.add_argument('--collection-timeout', type=int,
+                       help='Overall collection timeout in seconds (auto-calculated if not specified)')
     parser.add_argument('--max-retries', type=int, default=3,
                        help='Maximum retry attempts')
     parser.add_argument('--duration', type=int, default=300,
                        help='Test duration in seconds')
-    parser.add_argument('--parallel', action='store_true',
-                       help='Use parallel requests instead of serial')
+    parser.add_argument('--parallel-collection', action='store_true',
+                       help='Use parallel collection instead of serial (matches plugin config)')
+    parser.add_argument('--inter-request-delay', type=float, default=0.0,
+                       help='Delay between endpoints in serial mode (seconds)')
     parser.add_argument('--endpoints', nargs='+',
                        choices=['dsinfo.asp', 'usinfo.asp', 'dsofdminfo.asp', 
                                'usofdminfo.asp', 'getSysInfo.asp', 'getLinkStatus.asp'],
@@ -850,10 +918,12 @@ Examples:
     simulator = NetdataModemSimulator(
         modem_host=args.host,
         update_every=args.update_every,
-        timeout=args.timeout,
+        endpoint_timeout=args.endpoint_timeout,
+        collection_timeout=args.collection_timeout,
         max_retries=args.max_retries,
         test_duration=args.duration,
-        use_parallel=args.parallel,
+        parallel_collection=args.parallel_collection,
+        inter_request_delay=args.inter_request_delay,
         endpoints_to_test=endpoints
     )
     
