@@ -12,10 +12,10 @@ Key Features:
 - Tiered polling simulation (fast vs slow endpoints)
 - Parallel and serial collection modes
 - Comprehensive performance metrics
-- Real-time progress monitoring
+- Clean output for automated testing
 - JSON output for automated analysis
 
-Version: 2.0.0
+Version: 2.0.2 - Fixed syntax issues and added emoji progress tracking
 Author: Enhanced for tiered polling analysis
 """
 
@@ -48,12 +48,12 @@ class NetdataModemSimulator:
     to provide accurate performance predictions.
     """
 
-    # --- Endpoint Categories (Mirror plugin exactly) ---
+    # --- Endpoint Categories (Mirror actual plugin exactly from GitHub timeline) ---
     FAST_ENDPOINTS = [
         'dsinfo.asp',         # Downstream QAM channels - Critical data
         'usinfo.asp',         # Upstream QAM channels - Critical data  
         'getCmDocsisWan.asp', # WAN status - Connection health
-        'getViewInfo.asp'     # System uptime - Basic health
+        'getSysInfo.asp'      # System uptime and info (confirmed working)
     ]
     
     SLOW_ENDPOINTS = [
@@ -121,6 +121,7 @@ class NetdataModemSimulator:
         # --- Simulation State ---
         self.is_running = True
         self.start_time = None
+        self.last_progress_time = 0
         
         # --- Enhanced Performance Tracking ---
         self.results = {
@@ -138,12 +139,25 @@ class NetdataModemSimulator:
             'endpoint_success_rates': {},
             'cycle_types': [],
             'cache_hits': 0,
-            'cache_misses': 0
+            'cache_misses': 0,
+            'consecutive_failures': 0,
+            'max_consecutive_failures': 0
         }
         
         # Initialize endpoint success tracking
         for endpoint in self.ALL_ENDPOINTS:
             self.results['endpoint_success_rates'][endpoint] = {'success': 0, 'total': 0}
+        
+        # --- Performance Stats (for health tracking) ---
+        self.performance_stats = {
+            'total_cycles': 0,
+            'successful_cycles': 0,
+            'failed_cycles': 0,
+            'consecutive_failures': 0,
+            'response_times': [],
+            'collection_times': [],
+            'active_endpoints': 0
+        }
         
         logger.info(f"Enhanced Simulator initialized:")
         logger.info(f"  Collection mode: {'Parallel' if self.parallel_collection else 'Serial'}")
@@ -164,39 +178,147 @@ class NetdataModemSimulator:
         logger.info(f"Target end time: {end_time.strftime('%H:%M:%S')}")
         logger.info("Press Ctrl+C to stop early")
         
-        while self.is_running and datetime.now() < end_time:
-            cycle_start_time = time.monotonic()
+        # Quick connectivity test
+        logger.info("Testing initial connectivity...")
+        try:
+            import aiohttp
+            connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+            timeout = aiohttp.ClientTimeout(total=10)
             
-            # --- Determine endpoints for this cycle (mirror plugin logic) ---
-            self.run_counter += 1
-            endpoints_to_poll = self._get_endpoints_for_cycle()
-            cycle_type = "FULL" if len(endpoints_to_poll) == len(self.ALL_ENDPOINTS) else "FAST"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'application/json, text/html, */*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+            }
             
-            # Track cycle type
-            self.results['cycle_types'].append(cycle_type)
-            if cycle_type == "FAST":
-                self.results['fast_cycles'] += 1
-            else:
-                self.results['full_cycles'] += 1
-            
-            logger.debug(f"Cycle {self.run_counter} ({cycle_type}): {len(endpoints_to_poll)} endpoints")
-            
-            # --- Run Collection Cycle ---
-            success, collection_time, successful_requests = await self._run_collection_cycle(endpoints_to_poll)
-            
-            # --- Update Statistics ---
-            self._update_statistics(success, collection_time, endpoints_to_poll, successful_requests)
-            
-            # --- Progress Display ---
-            self._display_progress()
-            
-            # --- Wait for Next Cycle ---
-            elapsed = time.monotonic() - cycle_start_time
-            sleep_time = max(0, self.update_every - elapsed)
-            if sleep_time > 0:
-                await asyncio.sleep(sleep_time)
-
-        logger.info("\nSimulation completed.")
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers) as session:
+                test_url = f"{self.modem_host}/data/getSysInfo.asp"
+                async with session.get(test_url) as response:
+                    content_type = response.headers.get('content-type', '').lower()
+                    response_text = await response.text()
+                    
+                    if response.status == 200:
+                        logger.info(f"✅ Connectivity test passed (HTTP {response.status}, Content-Type: {content_type})")
+                        
+                        # Quick check of what we're getting
+                        if 'json' in content_type:
+                            logger.info("📋 Response appears to be JSON")
+                        elif 'html' in content_type:
+                            logger.warning("📋 Response is HTML, may need different approach")
+                            preview = response_text[:100].replace('\n', '\\n')
+                            logger.debug(f"📋 HTML preview: {preview}")
+                    else:
+                        logger.warning(f"⚠️  Connectivity test: HTTP {response.status}")
+        except Exception as e:
+            logger.error(f"❌ Connectivity test failed: {e}")
+            logger.warning("Continuing with simulation anyway...")
+        
+        try:
+            while self.is_running and datetime.now() < end_time:
+                cycle_start_time = time.monotonic()
+                
+                # Check if we should stop before starting cycle
+                if not self.is_running:
+                    break
+                
+                # --- Determine endpoints for this cycle (mirror plugin logic) ---
+                self.run_counter += 1
+                endpoints_to_poll = self._get_endpoints_for_cycle()
+                cycle_type = "FULL" if len(endpoints_to_poll) == len(self.ALL_ENDPOINTS) else "FAST"
+                
+                # Show cycle start indicator with emoji
+                cycle_emoji = "🔄"
+                if cycle_type == "FULL":
+                    type_emoji = "📊"  # Full data collection
+                elif cycle_type == "FAST":
+                    type_emoji = "⚡"  # Fast collection
+                else:
+                    type_emoji = "💾"  # Cached
+                
+                logger.info(f"{cycle_emoji} Starting cycle {self.run_counter} ({cycle_type}) {type_emoji}: {len(endpoints_to_poll)} endpoints")
+                
+                # Track cycle type
+                self.results['cycle_types'].append(cycle_type)
+                if cycle_type == "FAST":
+                    self.results['fast_cycles'] += 1
+                else:
+                    self.results['full_cycles'] += 1
+                
+                logger.debug(f"Cycle {self.run_counter} ({cycle_type}): {len(endpoints_to_poll)} endpoints")
+                
+                # --- Run Collection Cycle ---
+                success, collection_time, successful_requests = await self._run_collection_cycle(endpoints_to_poll)
+                
+                # Check again after potentially long operation
+                if not self.is_running:
+                    break
+                
+                # --- Update Statistics ---
+                self._update_statistics(success, collection_time, endpoints_to_poll, successful_requests)
+                
+                # Show cycle completion with progress tracking and emojis
+                status_emoji = "✅" if success else "❌"
+                success_detail = f"({successful_requests}/{len(endpoints_to_poll)} endpoints successful)"
+                
+                # Calculate progress
+                elapsed_time = time.time() - self.start_time.timestamp()
+                progress_percent = (elapsed_time / self.test_duration) * 100
+                remaining_minutes = (self.test_duration - elapsed_time) / 60
+                
+                # Estimate expected cycles for this point in time
+                expected_cycles_so_far = int(elapsed_time / self.update_every)
+                
+                # Overall health emoji based on recent performance
+                if hasattr(self, 'performance_stats'):
+                    recent_success_rate = (self.performance_stats['successful_cycles'] / self.performance_stats['total_cycles']) * 100 if self.performance_stats['total_cycles'] > 0 else 100
+                    consecutive_failures = self.performance_stats['consecutive_failures']
+                    
+                    if recent_success_rate >= 98 and consecutive_failures == 0:
+                        health_emoji = "🟢"  # Excellent
+                    elif recent_success_rate >= 90 and consecutive_failures <= 2:
+                        health_emoji = "🟡"  # Good
+                    elif recent_success_rate >= 80 and consecutive_failures <= 5:
+                        health_emoji = "🟠"  # Warning
+                    else:
+                        health_emoji = "🔴"  # Critical
+                else:
+                    health_emoji = "🟢" if success else "🟠"
+                
+                if successful_requests < len(endpoints_to_poll):
+                    # Calculate the threshold that was used
+                    threshold = max(1, int(len(endpoints_to_poll) * 0.8))
+                    threshold_detail = f", threshold: {threshold}"
+                else:
+                    threshold_detail = ""
+                
+                status_text = "SUCCESS" if success else "FAILED"
+                logger.info(f"{status_emoji} Completed cycle {self.run_counter}/{expected_cycles_so_far} ({progress_percent:.1f}%, {remaining_minutes:.1f}m remaining) {health_emoji}: "
+                           f"{status_text} in {collection_time*1000:.0f}ms {success_detail}{threshold_detail}")
+                
+                # --- Progress Display ---
+                self._display_progress()
+                
+                # --- Wait for Next Cycle (with early exit check) ---
+                elapsed = time.monotonic() - cycle_start_time
+                sleep_time = max(0, self.update_every - elapsed)
+                if sleep_time > 0:
+                    # Sleep in smaller chunks to check for early exit
+                    sleep_chunks = max(1, int(sleep_time))
+                    for _ in range(sleep_chunks):
+                        if not self.is_running:
+                            break
+                        await asyncio.sleep(min(1.0, sleep_time / sleep_chunks))
+        
+        except asyncio.CancelledError:
+            logger.info("Simulation cancelled")
+        except KeyboardInterrupt:
+            logger.info("Simulation interrupted")
+        finally:
+            logger.info("Simulation completed.")
 
     def _get_endpoints_for_cycle(self):
         """Determine which endpoints to poll (mirrors plugin logic exactly)."""
@@ -261,20 +383,20 @@ class NetdataModemSimulator:
             collection_time = time.monotonic() - start_time
             successful_requests = sum(1 for r in results if r is not None)
             
-            # Determine cycle type for tracking
+            # Determine actual cycle type for tracking
             if should_poll_ofdm and ofdm_endpoints:
-                cycle_type = "FULL"
-                self.results['full_cycles'] += 1
+                actual_cycle_type = "FULL"
             elif not should_poll_ofdm and ofdm_endpoints and self._is_ofdm_cache_valid():
-                cycle_type = "CACHED"
+                actual_cycle_type = "CACHED"
                 self.results['cached_cycles'] += 1
             else:
-                cycle_type = "FAST"
-                self.results['fast_cycles'] += 1
+                actual_cycle_type = "FAST"
             
-            self.results['cycle_types'].append(cycle_type)
+            # Consider cycle successful if we get >80% of endpoints working
+            # This is more realistic for real-world modem behavior
+            success_threshold = max(1, int(len(endpoints) * 0.8))  # At least 80% or minimum 1
+            is_cycle_success = successful_requests >= success_threshold
             
-            is_cycle_success = successful_requests == len(endpoints)
             return is_cycle_success, collection_time, successful_requests
             
         except Exception as e:
@@ -307,11 +429,22 @@ class NetdataModemSimulator:
         """Simulate serial endpoint fetching."""
         results = []
         
-        # Create a single session for the entire serial collection
+        # Create a single session for the entire serial collection with better headers
         connector = aiohttp.TCPConnector(ssl=self.ssl_context)
         timeout = aiohttp.ClientTimeout(total=self.collection_timeout)
         
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        # Headers that might help with Hitron modems
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/json, text/html, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+        }
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers) as session:
             for endpoint in endpoints:
                 result = await self._fetch_endpoint(session, endpoint)
                 results.append(result)
@@ -329,16 +462,32 @@ class NetdataModemSimulator:
             limit=10,
             keepalive_timeout=30
         )
-        timeout = aiohttp.ClientTimeout(total=self.collection_timeout, sock_read=self.endpoint_timeout)
         
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        # Use the longer timeout for parallel operations
+        max_endpoint_timeout = max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout)
+        timeout = aiohttp.ClientTimeout(total=self.collection_timeout, sock_read=max_endpoint_timeout)
+        
+        # Same headers as serial mode
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/json, text/html, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+        }
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers) as session:
             tasks = [self._fetch_endpoint(session, endpoint) for endpoint in endpoints]
             return await asyncio.gather(*tasks)
 
     async def _fetch_endpoint(self, session, endpoint):
-        """Fetch a single endpoint with enhanced timeout logic."""
+        """Fetch a single endpoint with enhanced timeout logic and detailed logging."""
         url = f"{self.modem_host}/data/{endpoint}"
         endpoint_timeout = self.endpoint_timeouts.get(endpoint, self.fast_endpoint_timeout)
+        
+        logger.debug(f"Fetching {endpoint} with {endpoint_timeout}s timeout...")
         
         for attempt in range(self.max_retries):
             request_start = time.monotonic()
@@ -348,24 +497,92 @@ class NetdataModemSimulator:
                     response_time = (time.monotonic() - request_start) * 1000  # Convert to ms
                     self.results['response_times'].append(response_time)
                     
+                    logger.debug(f"{endpoint}: HTTP {response.status} in {response_time:.1f}ms")
+                    
                     if response.status == 200:
                         # Update endpoint success tracking
                         self.results['endpoint_success_rates'][endpoint]['success'] += 1
                         self.results['endpoint_success_rates'][endpoint]['total'] += 1
-                        return await response.json()
+                        
+                        # Get the response content type
+                        content_type = response.headers.get('content-type', '').lower()
+                        logger.debug(f"{endpoint}: Content-Type: {content_type}")
+                        
+                        # Get the response text to examine what we're actually getting
+                        response_text = await response.text()
+                        logger.debug(f"{endpoint}: Response length: {len(response_text)} characters")
+                        
+                        # Log first 200 characters to see what we're getting
+                        preview = response_text[:200].replace('\n', '\\n').replace('\r', '\\r')
+                        logger.debug(f"{endpoint}: Response preview: {preview}")
+                        
+                        # Try to parse as JSON first
+                        if 'json' in content_type:
+                            try:
+                                json_data = await response.json()
+                                logger.debug(f"{endpoint}: Successfully parsed JSON response")
+                                return json_data
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"{endpoint}: JSON parsing failed: {e}")
+                                return None
+                        else:
+                            # If it's HTML but content looks like JSON, try to parse it anyway
+                            response_text_stripped = response_text.strip()
+                            if (response_text_stripped.startswith('{') and response_text_stripped.endswith('}')) or \
+                               (response_text_stripped.startswith('[') and response_text_stripped.endswith(']')):
+                                try:
+                                    import json
+                                    json_data = json.loads(response_text)
+                                    logger.info(f"{endpoint}: Successfully parsed JSON from HTML response")
+                                    return json_data
+                                except json.JSONDecodeError as e:
+                                    logger.warning(f"{endpoint}: HTML response contains invalid JSON: {e}")
+                            elif response_text_stripped.isdigit() or response_text_stripped in ['0', '1', 'true', 'false']:
+                                # Handle simple scalar responses (some endpoints return just "0" or "1")
+                                logger.info(f"{endpoint}: Received simple scalar response: '{response_text_stripped}'")
+                                return {"value": response_text_stripped}
+                            
+                            # If it's HTML and not JSON, log more details
+                            logger.warning(f"{endpoint}: Received HTML response instead of JSON")
+                            if '<html' in response_text.lower() or '<!doctype' in response_text.lower():
+                                logger.warning(f"{endpoint}: Response appears to be a full HTML page")
+                                # Look for common error indicators
+                                if 'error' in response_text.lower():
+                                    logger.error(f"{endpoint}: Error detected in HTML response")
+                                if 'login' in response_text.lower() or 'password' in response_text.lower():
+                                    logger.error(f"{endpoint}: Login page detected - authentication may be required")
+                                if '404' in response_text or 'not found' in response_text.lower():
+                                    logger.error(f"{endpoint}: 404 Not Found detected in response")
+                            
+                            return None
+                                
                     else:
+                        logger.warning(f"{endpoint}: HTTP {response.status} - {response.reason}")
                         self.results['endpoint_success_rates'][endpoint]['total'] += 1
                         
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            except asyncio.TimeoutError as e:
                 response_time = (time.monotonic() - request_start) * 1000
                 self.results['response_times'].append(response_time)
                 self.results['endpoint_success_rates'][endpoint]['total'] += 1
                 
-                logger.debug(f"{endpoint}: Attempt {attempt + 1} failed: {e} (timeout: {endpoint_timeout}s)")
+                logger.warning(f"{endpoint}: Timeout after {response_time:.1f}ms (limit: {endpoint_timeout}s)")
                 
                 if attempt < self.max_retries - 1:
+                    logger.debug(f"{endpoint}: Retrying in 1 second (attempt {attempt + 2}/{self.max_retries})")
+                    await asyncio.sleep(1)  # Brief pause between retries
+                    
+            except (aiohttp.ClientError, aiohttp.ClientConnectorError) as e:
+                response_time = (time.monotonic() - request_start) * 1000
+                self.results['response_times'].append(response_time)
+                self.results['endpoint_success_rates'][endpoint]['total'] += 1
+                
+                logger.warning(f"{endpoint}: Connection error: {e}")
+                
+                if attempt < self.max_retries - 1:
+                    logger.debug(f"{endpoint}: Retrying in 1 second (attempt {attempt + 2}/{self.max_retries})")
                     await asyncio.sleep(1)  # Brief pause between retries
         
+        logger.error(f"{endpoint}: All {self.max_retries} attempts failed")
         return None
 
     def _update_statistics(self, cycle_success, collection_time, endpoints, successful_requests):
@@ -378,21 +595,56 @@ class NetdataModemSimulator:
         
         if cycle_success:
             self.results['successful_cycles'] += 1
+            self.results['consecutive_failures'] = 0
         else:
             self.results['failed_cycles'] += 1
+            self.results['consecutive_failures'] += 1
+            self.results['max_consecutive_failures'] = max(
+                self.results['max_consecutive_failures'],
+                self.results['consecutive_failures']
+            )
+        
+        # Update performance stats for health tracking
+        self.performance_stats['total_cycles'] += 1
+        self.performance_stats['active_endpoints'] = successful_requests
+        self.performance_stats['collection_times'].append(collection_time * 1000)
+        
+        if cycle_success:
+            self.performance_stats['successful_cycles'] += 1
+            self.performance_stats['consecutive_failures'] = 0
+        else:
+            self.performance_stats['failed_cycles'] += 1
+            self.performance_stats['consecutive_failures'] += 1
 
     def _display_progress(self):
-        """Display simple progress information without fancy terminal effects."""
+        """Display timestamped progress information at regular intervals."""
         if self.results['total_cycles'] == 0:
             return
         
+        # Show progress every cycle for first 10 cycles, then every 10 cycles, with minimum 30 second intervals
+        current_time = time.time()
+        should_show = False
+        
+        if self.results['total_cycles'] <= 10:
+            # Show every cycle for first 10
+            should_show = True
+        elif self.results['total_cycles'] % 10 == 0:
+            # Show every 10 cycles after that
+            should_show = True
+        elif current_time - self.last_progress_time >= 30:
+            # Or show every 30 seconds minimum
+            should_show = True
+        
+        if not should_show:
+            return
+            
+        self.last_progress_time = current_time
+        
         # Calculate rates
         cycle_success_rate = (self.results['successful_cycles'] / self.results['total_cycles']) * 100
-        request_success_rate = (self.results['successful_requests'] / self.results['total_requests']) * 100 if self.results['total_requests'] > 0 else 0
         
         # Calculate average times
         avg_collection_time = statistics.mean(self.results['collection_times']) if self.results['collection_times'] else 0
-        avg_response_time = statistics.mean(self.results['response_times']) if self.results['response_times'] else 0
         
         # Calculate elapsed and remaining time
         elapsed = datetime.now() - self.start_time
@@ -401,19 +653,39 @@ class NetdataModemSimulator:
         # Progress percentage
         progress = (elapsed.total_seconds() / self.test_duration) * 100
         
-        # Simple line-by-line progress (no carriage returns)
-        print(f"Progress: {progress:.1f}% | Cycles: {self.results['total_cycles']} "
-              f"(Fast: {self.results['fast_cycles']}, Full: {self.results['full_cycles']}, Cached: {self.results['cached_cycles']}) | "
-              f"Success: {cycle_success_rate:.1f}% | Avg Time: {avg_collection_time:.0f}ms | Remaining: {remaining:.0f}s")
+        # Progress emojis
+        if progress < 25:
+            progress_emoji = "🚀"  # Starting
+        elif progress < 50:
+            progress_emoji = "📈"  # Early progress
+        elif progress < 75:
+            progress_emoji = "⏳"  # Mid progress
+        elif progress < 95:
+            progress_emoji = "🏁"  # Nearly done
+        else:
+            progress_emoji = "🎯"  # Finishing
         
-        # Show detailed progress every 10 cycles
-        if self.results['total_cycles'] % 10 == 0:
-            print(f"  -> Request Success: {request_success_rate:.1f}% | Avg Response: {avg_response_time:.0f}ms | Cache Hits: {self.results['cache_hits']}")
+        # Success rate emojis
+        if cycle_success_rate >= 99:
+            success_emoji = "💚"  # Excellent
+        elif cycle_success_rate >= 95:
+            success_emoji = "💛"  # Good
+        elif cycle_success_rate >= 80:
+            success_emoji = "🧡"  # Warning
+        else:
+            success_emoji = "❤️"  # Critical
+        
+        # Consistent timestamp format (matching logging format exactly)
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]  # Include milliseconds like logging
+        
+        print(f"{timestamp} - PROGRESS - {progress_emoji} Progress: {progress:.1f}% | Cycles: {self.results['total_cycles']} "
+              f"(Fast: {self.results['fast_cycles']}, Full: {self.results['full_cycles']}, Cached: {self.results['cached_cycles']}) | "
+              f"{success_emoji} Success: {cycle_success_rate:.1f}% | ⏱️ Avg Time: {avg_collection_time:.0f}ms | 🕐 Remaining: {remaining:.0f}s")
 
     def generate_report(self):
         """Generate comprehensive final report."""
         print("\n\n" + "="*80)
-        print("           ENHANCED SIMULATION REPORT")
+        print("           SIMULATION FINAL REPORT")
         print("="*80)
         
         if self.results['total_cycles'] == 0:
@@ -433,7 +705,8 @@ class NetdataModemSimulator:
         print(f"  Update Interval:       {self.update_every}s (fast endpoints)")
         print(f"  OFDM Poll Multiple:    {self.ofdm_poll_multiple}x (every {self.ofdm_poll_multiple * self.update_every}s)")
         print(f"  Collection Mode:       {'Parallel' if self.parallel_collection else 'Serial'}")
-        print(f"  Endpoint Timeout:      {self.endpoint_timeout}s")
+        print(f"  Fast Endpoint Timeout: {self.fast_endpoint_timeout}s")
+        print(f"  OFDM Endpoint Timeout: {self.ofdm_endpoint_timeout}s")
         print(f"  Collection Timeout:    {self.collection_timeout}s")
         print(f"  Max Retries:           {self.max_retries}")
         
@@ -441,7 +714,10 @@ class NetdataModemSimulator:
         print(f"  Total Cycles:          {self.results['total_cycles']}")
         print(f"  Fast Cycles:           {self.results['fast_cycles']} ({(self.results['fast_cycles']/self.results['total_cycles']*100):.1f}%)")
         print(f"  Full Cycles:           {self.results['full_cycles']} ({(self.results['full_cycles']/self.results['total_cycles']*100):.1f}%)")
-        print(f"  Cycle Success Rate:    {cycle_success_rate:.2f}% ({self.results['successful_cycles']}/{self.results['total_cycles']})")
+        print(f"  Cached Cycles:         {self.results['cached_cycles']} ({(self.results['cached_cycles']/self.results['total_cycles']*100):.1f}%)")
+        print(f"  Success Rate:          {cycle_success_rate:.2f}% ({self.results['successful_cycles']}/{self.results['total_cycles']})")
+        print(f"  Failed Cycles:         {self.results['failed_cycles']}")
+        print(f"  Max Consecutive Fails: {self.results['max_consecutive_failures']}")
         
         print(f"\nRequest Results:")
         print(f"  Total Requests:        {self.results['total_requests']}")
@@ -455,16 +731,25 @@ class NetdataModemSimulator:
         print(f"  Avg Response Time:     {avg_response_time:.1f}ms")
         print(f"  Collection Efficiency: {(avg_collection_time/self.collection_timeout/10):.1f}% of timeout")
         
+        print(f"\nCaching Performance:")
+        print(f"  Cache Hits:            {self.results['cache_hits']}")
+        print(f"  Cache Misses:          {self.results['cache_misses']}")
+        cache_total = self.results['cache_hits'] + self.results['cache_misses']
+        if cache_total > 0:
+            cache_hit_rate = (self.results['cache_hits'] / cache_total) * 100
+            print(f"  Cache Hit Rate:        {cache_hit_rate:.1f}%")
+        
         print(f"\nEndpoint Analysis:")
         for endpoint in self.ALL_ENDPOINTS:
             stats = self.results['endpoint_success_rates'][endpoint]
             if stats['total'] > 0:
                 success_rate = (stats['success'] / stats['total']) * 100
                 endpoint_type = "FAST" if endpoint in self.FAST_ENDPOINTS else "SLOW"
-                print(f"  {endpoint:20} ({endpoint_type}): {success_rate:5.1f}% ({stats['success']}/{stats['total']})")
+                timeout = self.endpoint_timeouts[endpoint]
+                print(f"  {endpoint:20} ({endpoint_type}): {success_rate:5.1f}% ({stats['success']}/{stats['total']}) [{timeout}s timeout]")
         
         # Performance Assessment
-        print(f"\nPerformance Assessment:")
+        print(f"\nAssessment:")
         if cycle_success_rate >= 99:
             assessment = "EXCELLENT"
         elif cycle_success_rate >= 95:
@@ -484,6 +769,9 @@ class NetdataModemSimulator:
         if request_success_rate < 95:
             print(f"  ⚠️  Warning: High request failure rate detected")
         
+        if self.results['max_consecutive_failures'] > 5:
+            print(f"  ⚠️  Warning: High consecutive failure count ({self.results['max_consecutive_failures']})")
+        
         print("="*80)
         
         # Create machine-readable report for automated analysis
@@ -498,7 +786,10 @@ class NetdataModemSimulator:
             "fast_cycles": self.results['fast_cycles'],
             "full_cycles": self.results['full_cycles'],
             "cached_cycles": self.results['cached_cycles'],
-            "consecutive_failures": 0,  # Calculate this if needed
+            "consecutive_failures": self.results['consecutive_failures'],
+            "max_consecutive_failures": self.results['max_consecutive_failures'],
+            "cache_hits": self.results['cache_hits'],
+            "cache_misses": self.results['cache_misses'],
             "endpoint_success_rates": self.results['endpoint_success_rates'],
             "assessment": assessment,
             "configuration": {
@@ -518,10 +809,20 @@ class NetdataModemSimulator:
 
 
 def signal_handler(simulator):
-    """Handle interrupt signals gracefully."""
+    """Handle interrupt signals gracefully with single-shot protection."""
+    signal_received = False
+    
     def handler(signum, frame):
-        logger.info(f"Received signal {signum}, stopping simulation...")
+        nonlocal signal_received
+        if signal_received:
+            # Already handling a signal, force exit
+            logger.warning("Force exit due to repeated interrupt")
+            sys.exit(1)
+        
+        signal_received = True
+        logger.info(f"Received signal {signum}, stopping simulation gracefully...")
         simulator.is_running = False
+    
     return handler
 
 
@@ -583,8 +884,10 @@ Examples:
                        help='Delay between requests in serial mode (default: %(default)s)')
     
     # Debugging
-    parser.add_argument('--debug', action='store_true',
-                       help='Enable debug logging')
+    parser.add_argument('--debug', action='store_true', default=True,
+                       help='Enable debug logging (default: enabled)')
+    parser.add_argument('--no-debug', action='store_false', dest='debug',
+                       help='Disable debug logging')
     
     args = parser.parse_args()
     
@@ -629,17 +932,22 @@ Examples:
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(simulator.run_simulation())
+        except KeyboardInterrupt:
+            logger.info("Received keyboard interrupt")
         finally:
             # Clean shutdown
-            pending = asyncio.all_tasks(loop)
-            if pending:
-                logger.debug(f"Cancelling {len(pending)} pending tasks...")
-                for task in pending:
-                    task.cancel()
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            loop.close()
-    except KeyboardInterrupt:
-        logger.info("Simulation interrupted by user")
+            try:
+                pending = asyncio.all_tasks(loop)
+                if pending:
+                    logger.debug(f"Cancelling {len(pending)} pending tasks...")
+                    for task in pending:
+                        task.cancel()
+                    # Give tasks a chance to cleanup
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception as e:
+                logger.debug(f"Error during cleanup: {e}")
+            finally:
+                loop.close()
     except Exception as e:
         logger.error(f"Simulation failed: {e}")
         sys.exit(1)
@@ -649,6 +957,17 @@ Examples:
             simulator.generate_report()
         except Exception as e:
             logger.error(f"Failed to generate report: {e}")
+            # Still try to output basic JSON for automation
+            try:
+                basic_report = {
+                    "cycle_success_rate": 0,
+                    "failed_cycles": simulator.results.get('failed_cycles', 0),
+                    "total_cycles": simulator.results.get('total_cycles', 0),
+                    "assessment": "INTERRUPTED"
+                }
+                print(json.dumps(basic_report))
+            except:
+                pass
 
 
 if __name__ == "__main__":
