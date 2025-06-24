@@ -18,9 +18,11 @@ Key Features:
 - Validation against actual plugin behavior
 - Multi-format graph generation (PNG, SVG)
 - Detailed endpoint timing breakdown and analysis
+- FIXED: Consistent timeout display in filenames, graphs, and reports
+- FIXED: Zero retries bug - max_retries=0 now works correctly
 
-Version: 2.3.0 - Added millisecond timeout precision, removed opinionated presets
-Author: Enhanced for millisecond timeout precision and pure simulation focus
+Version: 2.3.2 - Fixed zero retries bug and timeout display consistency issues
+Author: Enhanced for millisecond timeout precision with consistent display formatting
 """
 
 import asyncio
@@ -201,6 +203,12 @@ class NetdataModemSimulator:
             # Use the longer of the two timeouts for retry calculation (PLUGIN LOGIC)
             longer_timeout = max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout)
             self.max_retries = max(1, int(self.collection_timeout / longer_timeout))  # PLUGIN FORMULA
+        else:
+            self.max_retries = int(self.max_retries)
+            # FIXED: Allow zero retries (max_retries=0 means 1 attempt, no retries)
+            if self.max_retries < 0:
+                logger.warning(f"max_retries cannot be negative, setting to 0")
+                self.max_retries = 0
         
         # --- SSL Context (MATCHES PLUGIN) ---
         self.ssl_context = ssl.create_default_context()
@@ -284,34 +292,123 @@ class NetdataModemSimulator:
             'active_endpoints': 0
         }
         
-        # --- Graph Configuration ---
+        # --- FIXED: Graph Configuration with Proper Timeout Formatting ---
         if kwargs.get('output_dir'):
             self.output_dir = Path(kwargs.get('output_dir'))
         else:
             # Create descriptive directory name with key parameters
             mode = "parallel" if self.parallel_collection else "serial"
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            dir_name = f"hitron_sim_{timestamp}_{mode}_int{self.update_every}s_ofdm{self.ofdm_poll_multiple}x_timeout{self.fast_endpoint_timeout:.1f}s-{self.ofdm_endpoint_timeout:.1f}s"
+            
+            # Use proper timeout formatting for directory name
+            fast_timeout_str = self._format_timeout_for_filename(self.fast_endpoint_timeout)
+            ofdm_timeout_str = self._format_timeout_for_filename(self.ofdm_endpoint_timeout)
+            
+            dir_name = f"hitron_sim_{timestamp}_{mode}_int{self.update_every}s_ofdm{self.ofdm_poll_multiple}x_timeout{fast_timeout_str}-{ofdm_timeout_str}"
             self.output_dir = Path.cwd() / dir_name
         self.output_dir.mkdir(exist_ok=True)
         
-        # Create descriptive filename prefix for graphs
+        # FIXED: Create descriptive filename prefix for graphs with proper timeout formatting
         mode = "parallel" if self.parallel_collection else "serial"
-        self.file_prefix = f"hitron_{mode}_int{self.update_every}s_ofdm{self.ofdm_poll_multiple}x_ft{self.fast_endpoint_timeout:.1f}s_ot{self.ofdm_endpoint_timeout:.1f}s"
+        fast_timeout_str = self._format_timeout_for_filename(self.fast_endpoint_timeout)
+        ofdm_timeout_str = self._format_timeout_for_filename(self.ofdm_endpoint_timeout)
+        
+        self.file_prefix = (f"hitron_{mode}_int{self.update_every}s_"
+                           f"ofdm{self.ofdm_poll_multiple}x_"
+                           f"ft{fast_timeout_str}_"
+                           f"ot{ofdm_timeout_str}")
+        
+        # Enhanced logging with consistent timeout display
+        fast_timeout_info = self._get_timeout_display_info(self.fast_endpoint_timeout)
+        ofdm_timeout_info = self._get_timeout_display_info(self.ofdm_endpoint_timeout)
+        collection_timeout_info = self._get_timeout_display_info(self.collection_timeout)
         
         logger.info(f"Enhanced Simulator initialized:")
         logger.info(f"  🔍 Plugin validation: Endpoint categories, timeouts, and logic match plugin")
         logger.info(f"  📊 Per-endpoint timing: Full tracking and analysis enabled")
-        logger.info(f"  ⏱️ Millisecond precision: 0.25 = 250ms timeout support")
+        logger.info(f"  ⏱️ Millisecond precision: {fast_timeout_info['display']}/{ofdm_timeout_info['display']} timeout support")
         logger.info(f"  Collection mode: {'Parallel' if self.parallel_collection else 'Serial'}")
         logger.info(f"  Update interval: {self.update_every}s")
         logger.info(f"  OFDM poll multiple: {self.ofdm_poll_multiple} (every {self.ofdm_poll_multiple * self.update_every}s)")
-        logger.info(f"  Fast endpoint timeout: {self.fast_endpoint_timeout:.3f}s ({self.fast_endpoint_timeout * 1000:.0f}ms) ({len(self.FAST_ENDPOINTS)} endpoints)")
-        logger.info(f"  OFDM endpoint timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout * 1000:.0f}ms) ({len(self.SLOW_ENDPOINTS)} endpoints)")
-        logger.info(f"  Collection timeout: {self.collection_timeout:.3f}s (auto-calc: {self.update_every} * 0.9)")
-        logger.info(f"  Max retries: {self.max_retries} (auto-calc: {self.collection_timeout:.3f} ÷ {max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout):.3f})")
+        logger.info(f"  Fast endpoint timeout: {fast_timeout_info['precise']} ({len(self.FAST_ENDPOINTS)} endpoints)")
+        logger.info(f"  OFDM endpoint timeout: {ofdm_timeout_info['precise']} ({len(self.SLOW_ENDPOINTS)} endpoints)")
+        logger.info(f"  Collection timeout: {collection_timeout_info['precise']} (auto-calc: {self.update_every} * 0.9)")
+        longer_timeout = max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout)
+        logger.info(f"  Max retries: {self.max_retries} (auto-calc: {self.collection_timeout:.3f} ÷ {longer_timeout:.3f})")
         logger.info(f"  OFDM cache TTL: {self.ofdm_cache_ttl}s")
         logger.info(f"  📁 Output directory: {self.output_dir}")
+        
+        # FIXED: Log retry behavior clearly
+        total_attempts = self.max_retries + 1
+        if self.max_retries == 0:
+            logger.info(f"  Retry behavior: 1 attempt only (no retries)")
+        else:
+            logger.info(f"  Retry behavior: {total_attempts} total attempts (1 initial + {self.max_retries} retries)")
+
+    def _format_timeout_for_display(self, timeout_seconds: float) -> str:
+        """
+        Format timeout value for display in a user-friendly way.
+        
+        Args:
+            timeout_seconds: Timeout value in seconds
+            
+        Returns:
+            Formatted string showing the most appropriate unit
+        """
+        timeout_ms = timeout_seconds * 1000
+        
+        if timeout_seconds < 1.0:
+            # Sub-second timeouts: show in milliseconds
+            return f"{timeout_ms:.0f}ms"
+        elif timeout_seconds == int(timeout_seconds):
+            # Whole second timeouts: show as integer seconds
+            return f"{int(timeout_seconds)}s"
+        else:
+            # Decimal seconds: show with appropriate precision
+            return f"{timeout_seconds:.1f}s"
+
+    def _format_timeout_for_filename(self, timeout_seconds: float) -> str:
+        """
+        Format timeout value for use in filenames (no special characters).
+        
+        Args:
+            timeout_seconds: Timeout value in seconds
+            
+        Returns:
+            Formatted string suitable for filenames
+        """
+        timeout_ms = timeout_seconds * 1000
+        
+        if timeout_seconds < 1.0:
+            # Sub-second timeouts: show in milliseconds  
+            return f"{timeout_ms:.0f}ms"
+        elif timeout_seconds == int(timeout_seconds):
+            # Whole second timeouts: show as integer seconds
+            return f"{int(timeout_seconds)}s"
+        else:
+            # Decimal seconds: show with one decimal place
+            return f"{timeout_seconds:.1f}s"
+
+    def _get_timeout_display_info(self, timeout_seconds: float) -> dict:
+        """
+        Get comprehensive timeout display information.
+        
+        Args:
+            timeout_seconds: Timeout value in seconds
+            
+        Returns:
+            Dictionary with various formatted representations
+        """
+        timeout_ms = timeout_seconds * 1000
+        
+        return {
+            'seconds': timeout_seconds,
+            'milliseconds': timeout_ms,
+            'display': self._format_timeout_for_display(timeout_seconds),
+            'filename': self._format_timeout_for_filename(timeout_seconds),
+            'precise': f"{timeout_seconds:.3f}s ({timeout_ms:.0f}ms)",
+            'graph_label': f"{timeout_ms:.0f}ms" if timeout_seconds < 10 else f"{timeout_seconds:.1f}s"
+        }
 
     async def _test_connectivity(self):
         """Test initial connectivity using the correct endpoint names."""
@@ -624,7 +721,10 @@ class NetdataModemSimulator:
         
         cycle_timestamp = datetime.now()
         
-        for attempt in range(self.max_retries):
+        # FIXED: Zero retries bug - ensure at least one attempt is always made
+        total_attempts = max(1, self.max_retries + 1)
+        
+        for attempt in range(total_attempts):
             request_start = time.monotonic()
             
             try:
@@ -644,7 +744,10 @@ class NetdataModemSimulator:
                     stats['time_series']['attempts'].append(attempt + 1)
                     stats['time_series']['status_codes'].append(response.status)
                     
-                    logger.debug(f"{endpoint}: HTTP {response.status} in {response_time:.1f}ms (attempt {attempt + 1}) [timeout: {endpoint_timeout*1000:.0f}ms]")
+                    if self.max_retries == 0:
+                        logger.debug(f"{endpoint}: HTTP {response.status} in {response_time:.1f}ms (single attempt) [timeout: {endpoint_timeout*1000:.0f}ms]")
+                    else:
+                        logger.debug(f"{endpoint}: HTTP {response.status} in {response_time:.1f}ms (attempt {attempt + 1}/{total_attempts}) [timeout: {endpoint_timeout*1000:.0f}ms]")
                     
                     if response.status == 200:
                         # Update endpoint success tracking
@@ -735,9 +838,13 @@ class NetdataModemSimulator:
                 
                 logger.warning(f"{endpoint}: Timeout after {response_time:.1f}ms (limit: {endpoint_timeout*1000:.0f}ms)")
                 
-                if attempt < self.max_retries - 1:
-                    logger.debug(f"{endpoint}: Retrying in 1 second (attempt {attempt + 2}/{self.max_retries})")
-                    await asyncio.sleep(1)
+                if attempt < total_attempts - 1:
+                    if self.max_retries == 0:
+                        # This shouldn't happen since we only have 1 attempt, but just in case
+                        pass  
+                    else:
+                        logger.debug(f"{endpoint}: Retrying in 1 second (retry {attempt + 1}/{self.max_retries}, attempt {attempt + 2}/{total_attempts})")
+                        await asyncio.sleep(1)
                     
             except Exception as e:
                 response_time = (time.monotonic() - request_start) * 1000
@@ -762,10 +869,14 @@ class NetdataModemSimulator:
                 
                 logger.warning(f"{endpoint}: Error: {e}")
                 
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(1)
+                if attempt < total_attempts - 1:
+                    if self.max_retries > 0:
+                        await asyncio.sleep(1)
         
-        logger.error(f"{endpoint}: All {self.max_retries} attempts failed")
+        if self.max_retries == 0:
+            logger.error(f"{endpoint}: Single attempt failed (no retries configured)")
+        else:
+            logger.error(f"{endpoint}: All {total_attempts} attempts failed ({self.max_retries} retries)")
         return None
 
     def _update_statistics(self, cycle_success, collection_time, endpoints, successful_requests):
@@ -955,7 +1066,7 @@ class NetdataModemSimulator:
         logger.info("📊 Graph generation completed")
 
     def _generate_main_performance_graph(self):
-        """Generate main performance overview graph with millisecond precision display."""
+        """Generate main performance overview graph with consistent timeout display."""
         # Create DataFrame for easier plotting
         df = pd.DataFrame({
             'timestamp': self.results['time_series']['timestamps'],
@@ -981,11 +1092,16 @@ class NetdataModemSimulator:
         ax1.grid(True, alpha=0.3)
         ax1.set_ylim(0, 105)
         
-        # 2. Collection Times with Millisecond Precision
+        # 2. Collection Times with Consistent Timeout Display
         ax2.plot(df.index, df['collection_time'], color='blue', linewidth=1, alpha=0.8, label='Collection Time (ms)')
-        ax2.axhline(y=self.collection_timeout * 1000, color='red', linestyle='--', alpha=0.7, label=f'Timeout ({self.collection_timeout:.3f}s)')
+        
+        # Format collection timeout for display
+        collection_timeout_info = self._get_timeout_display_info(self.collection_timeout)
+        ax2.axhline(y=self.collection_timeout * 1000, color='red', linestyle='--', alpha=0.7, 
+                   label=f'Timeout ({collection_timeout_info["display"]})')
+        
         ax2.set_ylabel('Time (ms)')
-        ax2.set_title('Collection Times vs Timeout (Millisecond Precision)')
+        ax2.set_title('Collection Times vs Timeout')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         
@@ -1018,7 +1134,7 @@ class NetdataModemSimulator:
                 ax3.text(bar.get_x() + bar.get_width()/2., height + 1,
                         f'{height:.1f}%', ha='center', va='bottom', fontsize=9)
         
-        # 4. Performance Summary with Millisecond Precision
+        # 4. Performance Summary with Consistent Timeout Display
         ax4.axis('off')
         
         # Calculate summary stats
@@ -1026,7 +1142,12 @@ class NetdataModemSimulator:
         avg_collection = statistics.mean(self.results['collection_times']) if self.results['collection_times'] else 0
         avg_response = statistics.mean(self.results['response_times']) if self.results['response_times'] else 0
         
-        summary_text = f"""PERFORMANCE SUMMARY (Millisecond Precision)
+        # Get formatted timeout information
+        fast_timeout_info = self._get_timeout_display_info(self.fast_endpoint_timeout)
+        ofdm_timeout_info = self._get_timeout_display_info(self.ofdm_endpoint_timeout)
+        collection_timeout_info = self._get_timeout_display_info(self.collection_timeout)
+        
+        summary_text = f"""PERFORMANCE SUMMARY
 
 Total Cycles: {self.results['total_cycles']}
 Success Rate: {overall_success:.1f}%
@@ -1038,8 +1159,9 @@ Configuration:
 Update Every: {self.update_every}s
 OFDM Multiple: {self.ofdm_poll_multiple}x
 Mode: {'Parallel' if self.parallel_collection else 'Serial'}
-Fast Timeout: {self.fast_endpoint_timeout:.3f}s ({self.fast_endpoint_timeout*1000:.0f}ms)
-OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*1000:.0f}ms)
+Fast Timeout: {fast_timeout_info['precise']}
+OFDM Timeout: {ofdm_timeout_info['precise']}
+Collection Timeout: {collection_timeout_info['precise']}
 """
         
         ax4.text(0.05, 0.95, summary_text, transform=ax4.transAxes, fontsize=10, 
@@ -1052,9 +1174,14 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
             if len(df) > 0:
                 ax.tick_params(axis='x', rotation=45)
         
-        # Add overall title with millisecond precision
-        config_summary = f"Mode: {'Parallel' if self.parallel_collection else 'Serial'} | Interval: {self.update_every}s | OFDM: {self.ofdm_poll_multiple}x | Timeouts: {self.fast_endpoint_timeout*1000:.0f}ms/{self.ofdm_endpoint_timeout*1000:.0f}ms"
-        fig.suptitle(f'Hitron CODA Performance Overview (Millisecond Precision) - {config_summary}', fontsize=13, fontweight='bold')
+        # Add overall title with consistent timeout display
+        fast_display = fast_timeout_info['display']  
+        ofdm_display = ofdm_timeout_info['display']
+        config_summary = (f"Mode: {'Parallel' if self.parallel_collection else 'Serial'} | "
+                         f"Interval: {self.update_every}s | OFDM: {self.ofdm_poll_multiple}x | "
+                         f"Timeouts: {fast_display}/{ofdm_display}")
+        
+        fig.suptitle(f'Hitron CODA Performance Overview - {config_summary}', fontsize=13, fontweight='bold')
         
         plt.tight_layout()
         
@@ -1066,7 +1193,7 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
         plt.close()
 
     def _generate_endpoint_timing_graphs(self):
-        """Generate detailed per-endpoint timing graphs with millisecond precision."""
+        """Generate detailed per-endpoint timing graphs with consistent timeout display."""
         # Create a large figure for all endpoint timings
         n_endpoints = len(self.ALL_ENDPOINTS)
         n_cols = 2
@@ -1110,9 +1237,13 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
                 ax.scatter(endpoint_df[failure_mask].index, endpoint_df[failure_mask]['response_time'], 
                           c='red', alpha=0.7, s=20, label='Failure')
             
-            # Add timeout line with millisecond precision
-            timeout_ms = self.endpoint_timeouts[endpoint] * 1000
-            ax.axhline(y=timeout_ms, color='orange', linestyle='--', alpha=0.7, label=f'Timeout ({timeout_ms:.0f}ms)')
+            # Add timeout line with consistent display
+            endpoint_timeout_seconds = self.endpoint_timeouts[endpoint]
+            timeout_info = self._get_timeout_display_info(endpoint_timeout_seconds)
+            timeout_ms = endpoint_timeout_seconds * 1000
+            
+            ax.axhline(y=timeout_ms, color='orange', linestyle='--', alpha=0.7, 
+                      label=f'Timeout ({timeout_info["display"]})')
             
             # Calculate stats for title
             if stats['response_times']:
@@ -1121,7 +1252,9 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
                 short_name = endpoint.replace('.asp', '')
                 endpoint_type = "FAST" if endpoint in self.FAST_ENDPOINTS else "OFDM"
                 
-                ax.set_title(f'{short_name} ({endpoint_type})\nAvg: {avg_time:.0f}ms, Success: {success_rate:.1f}%, Timeout: {timeout_ms:.0f}ms')
+                ax.set_title(f'{short_name} ({endpoint_type})\n'
+                            f'Avg: {avg_time:.0f}ms, Success: {success_rate:.1f}%, '
+                            f'Timeout: {timeout_info["display"]}')
             else:
                 ax.set_title(f'{endpoint.replace(".asp", "")} - No Response Times')
             
@@ -1136,7 +1269,7 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
             col = i % n_cols
             axes[row][col].set_visible(False)
         
-        plt.suptitle('Per-Endpoint Response Time Analysis (Millisecond Precision)', fontsize=16, fontweight='bold')
+        plt.suptitle('Per-Endpoint Response Time Analysis', fontsize=16, fontweight='bold')
         plt.tight_layout()
         
         # Save endpoint timing graph
@@ -1462,7 +1595,7 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
                 logger.debug(f"📊 Detailed CSV saved for {endpoint}: {endpoint_csv_detailed}")
 
     def generate_report(self):
-        """Generate comprehensive final report with millisecond precision and plugin validation."""
+        """Generate comprehensive final report with consistent timeout display and plugin validation."""
         print("\n\n" + "="*80)
         print("           ENHANCED SIMULATION FINAL REPORT")
         print("           📊 MILLISECOND TIMEOUT PRECISION ANALYSIS")
@@ -1489,15 +1622,19 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
         print(f"  ✅ Retry logic: Auto-calculation matches plugin formula")
         print(f"  ✅ Per-endpoint tracking: Enhanced timing analysis added")
         
-        # Test configuration with millisecond precision
+        # FIXED: Test configuration with consistent timeout display
+        fast_timeout_info = self._get_timeout_display_info(self.fast_endpoint_timeout)
+        ofdm_timeout_info = self._get_timeout_display_info(self.ofdm_endpoint_timeout)
+        collection_timeout_info = self._get_timeout_display_info(self.collection_timeout)
+        
         print(f"\nConfiguration (Millisecond Precision):")
         print(f"  Test Duration:         {self.test_duration}s")
         print(f"  Update Interval:       {self.update_every}s (fast endpoints)")
         print(f"  OFDM Poll Multiple:    {self.ofdm_poll_multiple}x (every {self.ofdm_poll_multiple * self.update_every}s)")
         print(f"  Collection Mode:       {'Parallel' if self.parallel_collection else 'Serial'}")
-        print(f"  Fast Endpoint Timeout: {self.fast_endpoint_timeout:.3f}s ({self.fast_endpoint_timeout*1000:.0f}ms) ({len(self.FAST_ENDPOINTS)} endpoints)")
-        print(f"  OFDM Endpoint Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*1000:.0f}ms) ({len(self.SLOW_ENDPOINTS)} endpoints)")
-        print(f"  Collection Timeout:    {self.collection_timeout:.3f}s ({self.collection_timeout*1000:.0f}ms) (auto-calc: {self.update_every} × 0.9)")
+        print(f"  Fast Endpoint Timeout: {fast_timeout_info['precise']} ({len(self.FAST_ENDPOINTS)} endpoints)")
+        print(f"  OFDM Endpoint Timeout: {ofdm_timeout_info['precise']} ({len(self.SLOW_ENDPOINTS)} endpoints)")
+        print(f"  Collection Timeout:    {collection_timeout_info['precise']} (auto-calc: {self.update_every} × 0.9)")
         longer_timeout = max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout)
         print(f"  Max Retries:           {self.max_retries} (auto-calc: {self.collection_timeout:.3f} ÷ {longer_timeout:.3f})")
         
@@ -1533,8 +1670,9 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
             cache_hit_rate = (self.results['cache_hits'] / cache_total) * 100
             print(f"  Cache Hit Rate:        {cache_hit_rate:.1f}%")
         
+        # FIXED: Detailed per-endpoint analysis with consistent timeout display
         print(f"\n📊 DETAILED PER-ENDPOINT ANALYSIS (Millisecond Precision):")
-        print(f"  {'Endpoint':<20} {'Type':<4} {'Reqs':<6} {'Success':<7} {'Avg(ms)':<8} {'Min(ms)':<8} {'Max(ms)':<8} {'P95(ms)':<8} {'Timeout(ms)':<11} {'Timeouts':<8} {'Retries':<7}")
+        print(f"  {'Endpoint':<20} {'Type':<4} {'Reqs':<6} {'Success':<7} {'Avg(ms)':<8} {'Min(ms)':<8} {'Max(ms)':<8} {'P95(ms)':<8} {'Timeout':<11} {'Timeouts':<8} {'Retries':<7}")
         print(f"  {'-'*20} {'-'*4} {'-'*6} {'-'*7} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*11} {'-'*8} {'-'*7}")
         
         for endpoint in self.ALL_ENDPOINTS:
@@ -1542,7 +1680,7 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
             if stats['total_requests'] > 0:
                 success_rate = (stats['successful_requests'] / stats['total_requests']) * 100
                 endpoint_type = "FAST" if endpoint in self.FAST_ENDPOINTS else "OFDM"
-                timeout_ms = self.endpoint_timeouts[endpoint] * 1000
+                timeout_info = self._get_timeout_display_info(self.endpoint_timeouts[endpoint])
                 
                 if stats['response_times']:
                     avg_time = statistics.mean(stats['response_times'])
@@ -1555,7 +1693,7 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
                 avg_attempts = statistics.mean(stats['attempts_used']) if stats['attempts_used'] else 0
                 
                 short_name = endpoint.replace('.asp', '')
-                print(f"  {short_name:<20} {endpoint_type:<4} {stats['total_requests']:<6} {success_rate:<7.1f} {avg_time:<8.0f} {min_time:<8.0f} {max_time:<8.0f} {p95_time:<8.0f} {timeout_ms:<11.0f} {stats['timeout_failures']:<8} {avg_attempts:<7.1f}")
+                print(f"  {short_name:<20} {endpoint_type:<4} {stats['total_requests']:<6} {success_rate:<7.1f} {avg_time:<8.0f} {min_time:<8.0f} {max_time:<8.0f} {p95_time:<8.0f} {timeout_info['display']:<11} {stats['timeout_failures']:<8} {avg_attempts:<7.1f}")
         
         # Endpoint ranking by performance
         print(f"\n🏆 ENDPOINT PERFORMANCE RANKING (by avg response time):")
@@ -1600,24 +1738,28 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
         
         print(f"  Overall Rating:        {assessment}")
         
-        # Millisecond-specific recommendations
+        # FIXED: Millisecond-specific recommendations with consistent timeout display
         print(f"\n💡 MILLISECOND TIMEOUT OPTIMIZATION SUGGESTIONS:")
         for endpoint, stats in self.endpoint_stats.items():
             if stats['total_requests'] > 0:
                 success_rate = (stats['successful_requests'] / stats['total_requests']) * 100
                 avg_time = statistics.mean(stats['response_times']) if stats['response_times'] else 0
-                timeout_ms = self.endpoint_timeouts[endpoint] * 1000
+                timeout_info = self._get_timeout_display_info(self.endpoint_timeouts[endpoint])
+                timeout_seconds = self.endpoint_timeouts[endpoint]
                 
                 if success_rate < 90:
-                    print(f"  🔴 {endpoint}: Low success rate ({success_rate:.1f}%) - increase timeout from {timeout_ms:.0f}ms")
-                elif avg_time > timeout_ms * 0.8:
-                    print(f"  🟠 {endpoint}: High response time ({avg_time:.0f}ms) near timeout ({timeout_ms:.0f}ms)")
+                    suggested_timeout = self._format_timeout_for_display(timeout_seconds * 1.5)
+                    print(f"  🔴 {endpoint}: Low success rate ({success_rate:.1f}%) - increase timeout from {timeout_info['display']} to {suggested_timeout}")
+                elif avg_time > timeout_seconds * 800:  # 80% in ms
+                    print(f"  🟠 {endpoint}: High response time ({avg_time:.0f}ms) near timeout ({timeout_info['display']})")
                 elif stats['timeout_failures'] > stats['total_requests'] * 0.1:
-                    print(f"  🟡 {endpoint}: High timeout rate ({stats['timeout_failures']}/{stats['total_requests']}) - increase from {timeout_ms:.0f}ms")
-                elif avg_time < timeout_ms * 0.3 and success_rate >= 99:
-                    print(f"  🟢 {endpoint}: Could reduce timeout from {timeout_ms:.0f}ms to {avg_time*3:.0f}ms (3x avg)")
+                    suggested_timeout = self._format_timeout_for_display(timeout_seconds * 1.3)
+                    print(f"  🟡 {endpoint}: High timeout rate ({stats['timeout_failures']}/{stats['total_requests']}) - increase from {timeout_info['display']} to {suggested_timeout}")
+                elif avg_time < timeout_seconds * 300 and success_rate >= 99:  # 30% in ms
+                    suggested_timeout = self._format_timeout_for_display(avg_time * 3 / 1000)
+                    print(f"  🟢 {endpoint}: Could reduce timeout from {timeout_info['display']} to {suggested_timeout} (3x avg)")
                 else:
-                    print(f"  🟢 {endpoint}: Timeout {timeout_ms:.0f}ms looks optimal")
+                    print(f"  🟢 {endpoint}: Timeout {timeout_info['display']} looks optimal")
         
         # Optimization suggestions with millisecond precision
         if utilization < 30 and cycle_success_rate > 95:
@@ -1630,7 +1772,7 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
         
         print(f"\n📊 Graphs and CSVs saved to: {self.output_dir}")
         print(f"📁 Generated files:")
-        print(f"  - {self.file_prefix}_overview.png (main performance overview with ms precision)")
+        print(f"  - {self.file_prefix}_overview.png (main performance overview)")
         print(f"  - {self.file_prefix}_endpoint_timings.png (per-endpoint timing analysis)")
         print(f"  - {self.file_prefix}_endpoint_comparison.png (endpoint comparison)")
         print(f"  - {self.file_prefix}_timing_distribution.png (timing distribution analysis)")
@@ -1677,7 +1819,11 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
                 "fast_endpoint_timeout_ms": self.fast_endpoint_timeout * 1000,
                 "ofdm_endpoint_timeout_ms": self.ofdm_endpoint_timeout * 1000,
                 "collection_timeout_ms": self.collection_timeout * 1000,
-                "max_retries": self.max_retries
+                "max_retries": self.max_retries,
+                # FIXED: Add user-friendly timeout displays
+                "fast_endpoint_timeout_display": self._format_timeout_for_display(self.fast_endpoint_timeout),
+                "ofdm_endpoint_timeout_display": self._format_timeout_for_display(self.ofdm_endpoint_timeout),
+                "collection_timeout_display": self._format_timeout_for_display(self.collection_timeout)
             },
             "output_directory": str(self.output_dir)
         }
@@ -1685,6 +1831,7 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
         # Add detailed endpoint stats to report
         for endpoint, stats in self.endpoint_stats.items():
             if stats['total_requests'] > 0:
+                timeout_info = self._get_timeout_display_info(self.endpoint_timeouts[endpoint])
                 report["endpoint_detailed_stats"][endpoint] = {
                     "total_requests": stats['total_requests'],
                     "successful_requests": stats['successful_requests'],
@@ -1694,6 +1841,7 @@ OFDM Timeout: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout*100
                     "max_response_time_ms": max(stats['response_times']) if stats['response_times'] else 0,
                     "timeout_failures": stats['timeout_failures'],
                     "timeout_setting_ms": self.endpoint_timeouts[endpoint] * 1000,
+                    "timeout_setting_display": timeout_info['display'],  # FIXED: Add user-friendly display
                     "avg_attempts": statistics.mean(stats['attempts_used']) if stats['attempts_used'] else 0
                 }
         
@@ -1775,7 +1923,7 @@ Examples with Millisecond Timeout Precision:
     parser.add_argument('--collection-timeout', type=str, default=None,
                        help='Overall collection timeout. Supports: 25s, 30000ms, 54.5 (default: 90%% of update-every)')
     parser.add_argument('--max-retries', type=int, default=None,
-                       help='Max retries per endpoint (default: auto-calculated)')
+                       help='Max retries per endpoint (0=no retries, default: auto-calculated)')
     
     # Legacy timeout support (for backward compatibility)
     parser.add_argument('--endpoint-timeout', type=str, default=None,
@@ -2001,4 +2149,10 @@ python netdata_simulator.py --fast-endpoint-timeout 0.15 --ofdm-endpoint-timeout
 
 # 10. Performance comparison at different precisions
 python netdata_simulator.py --fast-endpoint-timeout 0.8 --ofdm-endpoint-timeout 2.2 --update-every 30 --duration 180
+
+# 11. Zero retries testing (single attempt only)
+python netdata_simulator.py --fast-endpoint-timeout 0.5 --max-retries 0 --quick-test
+
+# 12. High retry testing for unstable connections
+python netdata_simulator.py --fast-endpoint-timeout 1.0 --max-retries 5 --parallel
 """

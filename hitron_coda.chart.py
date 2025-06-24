@@ -11,8 +11,9 @@ Key Features:
 - Smart timeout management with dynamic retry calculation
 - Comprehensive monitoring of 50+ metrics across 15 charts
 - Built-in health monitoring and performance tracking
+- FIXED: Zero retries bug - max_retries=0 now works correctly
 
-Version: 2.1.0 - Added millisecond timeout precision support
+Version: 2.1.1 - Fixed zero retries bug and enhanced timeout precision support
 Author: Enhanced for production stability and sub-second timeout control
 """
 
@@ -222,7 +223,7 @@ class Service(SimpleService):
             # Auto-calculate as 90% of update_every (PLUGIN DEFAULT)
             self.collection_timeout = int(self.update_every * 0.9)
         
-        # --- Enhanced Auto-calculated Max Retries ---
+        # --- Enhanced Auto-calculated Max Retries with Zero Support ---
         self.max_retries = self.configuration.get('max_retries')
         if self.max_retries is None:
             # Use the longer of the two timeouts for retry calculation (PLUGIN LOGIC)
@@ -230,6 +231,10 @@ class Service(SimpleService):
             self.max_retries = max(1, int(self.collection_timeout / longer_timeout))
         else:
             self.max_retries = int(self.max_retries)
+            # FIXED: Allow zero retries (max_retries=0 means 1 attempt, no retries)
+            if self.max_retries < 0:
+                logger.warning(f"[{self.name}] max_retries cannot be negative, setting to 0")
+                self.max_retries = 0
         
         # --- OFDM Caching Configuration ---
         self.ofdm_cache = {}
@@ -241,7 +246,17 @@ class Service(SimpleService):
         logger.info(f"[{self.name}]   OFDM endpoints: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout * 1000:.0f}ms)")
         logger.info(f"[{self.name}]   Collection timeout: {self.collection_timeout:.3f}s ({self.collection_timeout * 1000:.0f}ms)")
         longer_timeout = max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout)
-        logger.info(f"[{self.name}]   Max retries: {self.max_retries} (auto-calc: {self.collection_timeout:.3f} ÷ {longer_timeout:.3f})")
+        retry_info = f"max_retries: {self.max_retries}"
+        if self.configuration.get('max_retries') is None:
+            retry_info += f" (auto-calc: {self.collection_timeout:.3f} ÷ {longer_timeout:.3f})"
+        logger.info(f"[{self.name}]   {retry_info}")
+        
+        # FIXED: Log retry behavior clearly
+        total_attempts = self.max_retries + 1
+        if self.max_retries == 0:
+            logger.info(f"[{self.name}]   Retry behavior: 1 attempt only (no retries)")
+        else:
+            logger.info(f"[{self.name}]   Retry behavior: {total_attempts} total attempts (1 initial + {self.max_retries} retries)")
 
     def _setup_tiered_polling(self):
         """Configure the tiered polling system."""
@@ -465,14 +480,17 @@ class Service(SimpleService):
         with requests.Session() as session:
             session.verify = False
             session.headers.update({
-                'User-Agent': 'Netdata-Hitron-Plugin/2.1.0',
+                'User-Agent': 'Netdata-Hitron-Plugin/2.1.1',
                 'Accept': 'application/json, */*',
                 'Connection': 'close'
             })
             
             for endpoint in endpoints:
                 success = False
-                for attempt in range(self.max_retries):
+                # FIXED: Zero retries bug - ensure at least one attempt is always made
+                total_attempts = max(1, self.max_retries + 1)
+                
+                for attempt in range(total_attempts):
                     try:
                         url = f"{self.host}/data/{endpoint}"
                         response = session.get(url, timeout=self.endpoint_timeouts.get(endpoint))
@@ -480,16 +498,27 @@ class Service(SimpleService):
                         
                         data[endpoint] = response.json()
                         success = True
-                        logger.debug(f"[{self.name}] {endpoint}: Success on attempt {attempt + 1}")
+                        
+                        if self.max_retries == 0:
+                            logger.debug(f"[{self.name}] {endpoint}: Success on single attempt (no retries)")
+                        else:
+                            logger.debug(f"[{self.name}] {endpoint}: Success on attempt {attempt + 1}/{total_attempts}")
                         break
                         
                     except requests.RequestException as e:
-                        logger.debug(f"[{self.name}] {endpoint}: Attempt {attempt + 1} failed: {e}")
-                        if attempt < self.max_retries - 1:
+                        if self.max_retries == 0:
+                            logger.debug(f"[{self.name}] {endpoint}: Failed on single attempt: {e}")
+                        else:
+                            logger.debug(f"[{self.name}] {endpoint}: Attempt {attempt + 1}/{total_attempts} failed: {e}")
+                        
+                        if attempt < total_attempts - 1:
                             time.sleep(1)  # Brief pause between retries
                 
                 if not success:
-                    logger.warning(f"[{self.name}] {endpoint}: All {self.max_retries} attempts failed")
+                    if self.max_retries == 0:
+                        logger.warning(f"[{self.name}] {endpoint}: Single attempt failed (no retries configured)")
+                    else:
+                        logger.warning(f"[{self.name}] {endpoint}: All {total_attempts} attempts failed")
                 
                 # Delay between endpoints to be gentle on the modem
                 if len(endpoints) > 1 and endpoint != endpoints[-1]:
@@ -510,7 +539,7 @@ class Service(SimpleService):
         async with aiohttp.ClientSession(
             connector=connector, 
             headers={
-                'User-Agent': 'Netdata-Hitron-Plugin/2.1.0',
+                'User-Agent': 'Netdata-Hitron-Plugin/2.1.1',
                 'Accept': 'application/json, */*'
             }
         ) as session:
@@ -532,21 +561,36 @@ class Service(SimpleService):
         url = f"{self.host}/data/{endpoint}"
         endpoint_timeout = self.endpoint_timeouts.get(endpoint, self.fast_endpoint_timeout)
         
-        for attempt in range(self.max_retries):
+        # FIXED: Zero retries bug - ensure at least one attempt is always made
+        total_attempts = max(1, self.max_retries + 1)
+        
+        for attempt in range(total_attempts):
             try:
                 # Use precise timeout (aiohttp supports float precision)
                 timeout = aiohttp.ClientTimeout(total=endpoint_timeout)
                 async with session.get(url, timeout=timeout) as response:
                     response.raise_for_status()
-                    logger.debug(f"[{self.name}] {endpoint}: Success on attempt {attempt + 1} (timeout: {endpoint_timeout:.3f}s)")
+                    
+                    if self.max_retries == 0:
+                        logger.debug(f"[{self.name}] {endpoint}: Success on single attempt (timeout: {endpoint_timeout:.3f}s)")
+                    else:
+                        logger.debug(f"[{self.name}] {endpoint}: Success on attempt {attempt + 1}/{total_attempts} (timeout: {endpoint_timeout:.3f}s)")
+                    
                     return await response.json()
                     
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                logger.debug(f"[{self.name}] {endpoint}: Async attempt {attempt + 1} failed: {e}")
-                if attempt < self.max_retries - 1:
+                if self.max_retries == 0:
+                    logger.debug(f"[{self.name}] {endpoint}: Failed on single attempt: {e}")
+                else:
+                    logger.debug(f"[{self.name}] {endpoint}: Async attempt {attempt + 1}/{total_attempts} failed: {e}")
+                
+                if attempt < total_attempts - 1:
                     await asyncio.sleep(1)
         
-        logger.warning(f"[{self.name}] {endpoint}: All {self.max_retries} async attempts failed")
+        if self.max_retries == 0:
+            logger.warning(f"[{self.name}] {endpoint}: Single attempt failed (no retries configured)")
+        else:
+            logger.warning(f"[{self.name}] {endpoint}: All {total_attempts} async attempts failed")
         return None
 
     def _parse_uptime_string(self, uptime_str: str) -> int:
