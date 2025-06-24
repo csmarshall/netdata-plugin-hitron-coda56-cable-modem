@@ -7,7 +7,9 @@ Automated Test Suite for Hitron CODA Plugin Limit Finding.
 Systematically tests polling limits to find the fastest stable configuration
 for fast endpoints and optimal OFDM polling intervals.
 
-Version: 2.0.1 - Fixed real-time output handling and JSON parsing
+UPDATED: Minimum 2-hour tests for statistically significant data.
+
+Version: 2.1.0 - Statistical significance focused with 2+ hour minimums
 """
 
 import asyncio
@@ -31,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 class HitronTestSuite:
-    """Aggressive limit-finding test suite for Hitron CODA modems."""
+    """Statistical significance focused test suite for Hitron CODA modems."""
 
     def __init__(self, simulator_script: str, host: str, quick_mode: bool = False):
         self.simulator_script = Path(simulator_script).resolve()
@@ -58,231 +60,210 @@ class HitronTestSuite:
         # Build test matrix
         self.tests = self._create_test_matrix()
         
-        logger.info("Hitron CODA Test Suite Initialized")
+        logger.info("Hitron CODA Test Suite Initialized - 18-24 Hour Optimized")
         logger.info(f"Results directory: {self.results_dir}")
         logger.info(f"Test count: {len(self.tests)}")
         logger.info(f"Quick mode: {quick_mode}")
+        
+        # Calculate total expected runtime
+        total_hours = sum(t['duration'] for t in self.tests) / 3600
+        logger.info(f"⏱️ Total expected runtime: {total_hours:.1f} hours")
+        
+        # Show phase breakdown
+        phase_hours = {}
+        for test in self.tests:
+            phase = test['phase']
+            if phase not in phase_hours:
+                phase_hours[phase] = 0
+            phase_hours[phase] += test['duration'] / 3600
+        
+        logger.info("📊 Phase breakdown:")
+        for phase in sorted(phase_hours.keys()):
+            hours = phase_hours[phase]
+            logger.info(f"   Phase {phase}: {hours:.1f} hours")
+        
+        if total_hours > 30:
+            logger.warning(f"⚠️ Runtime exceeds target ({total_hours:.1f} hours)")
+        elif total_hours > 18:
+            logger.info(f"✅ Runtime within 18-24 hour target ({total_hours:.1f} hours)")
+        else:
+            logger.info(f"✅ Efficient runtime ({total_hours:.1f} hours)")
 
     def _create_test_matrix(self):
-        """Create the test matrix for aggressive limit finding with timeout optimization."""
+        """Create the test matrix optimized for 18-24 hour completion with statistical significance."""
         
-        # Test durations
+        # Test durations optimized for 18-24 hour total runtime
         if self.quick_mode:
-            short = 600   # 10 min
-            medium = 900  # 15 min  
-            long = 1200   # 20 min
+            short = 7200    # 2 hours - for limit testing
+            medium = 10800  # 3 hours - for validation
+            long = 14400    # 4 hours - for stability confirmation
         else:
-            short = 1800  # 30 min
-            medium = 3600 # 1 hour
-            long = 7200   # 2 hours
+            short = 7200    # 2 hours - sufficient for failure detection
+            medium = 10800  # 3 hours - good statistical confidence  
+            long = 14400    # 4 hours - high confidence validation
         
         tests = [
-            # PHASE 1: Baseline and Timeout Optimization
+            # PHASE 1: Baseline Establishment (6 hours total)
             {
                 "phase": 1,
-                "name": "Current Config Baseline",
-                "description": "Validate current 15s works with conservative timeouts",
-                "duration": short,
+                "name": "Current 15s Baseline",
+                "description": "Validate current 15s polling performance baseline",
+                "duration": medium,  # 3 hours - sufficient for baseline
                 "update_every": 15,
-                "ofdm_multiple": 9999,  # Fast endpoints only
+                "ofdm_multiple": 20,  # 5-minute OFDM
                 "fast_timeout": 3,
                 "ofdm_timeout": 8,
-                "max_retries": 1,
-                "expected": "Should work - proven config"
+                "max_retries": 3,
+                "expected": "Establish current performance baseline"
             },
             {
                 "phase": 1,
-                "name": "Optimized Timeouts",
-                "description": "Same 15s interval but optimized timeouts",
-                "duration": short,
+                "name": "Optimized Timeout Baseline",
+                "description": "Test current 15s with optimized timeouts",
+                "duration": medium,  # 3 hours
                 "update_every": 15,
-                "ofdm_multiple": 9999,
-                "fast_timeout": 1,      # 10x faster timeout
-                "ofdm_timeout": 2,      # 4x faster timeout
-                "max_retries": 2,       # More retries since timeouts are tighter
-                "expected": "Should work with much faster response"
+                "ofdm_multiple": 20,  # 5-minute OFDM
+                "fast_timeout": 1,
+                "ofdm_timeout": 4,
+                "max_retries": 4,
+                "expected": "Validate timeout optimizations"
             },
             
-            # PHASE 2: Aggressive Polling with Optimized Timeouts
+            # PHASE 2: Aggressive Polling Tests (8 hours total)
             {
                 "phase": 2,
-                "name": "Aggressive 10s + Fast Timeouts",
-                "description": "10s polling with optimized 1s timeouts",
-                "duration": medium,
-                "update_every": 10,
-                "ofdm_multiple": 9999,
+                "name": "12s Aggressive Test",
+                "description": "Test 12s polling for performance gains",
+                "duration": medium,  # 3 hours - good sample size
+                "update_every": 12,
+                "ofdm_multiple": 25,  # 5-minute OFDM
                 "fast_timeout": 1,
-                "ofdm_timeout": 2,
+                "ofdm_timeout": 3,
                 "max_retries": 3,
-                "expected": "Should be very responsive"
+                "expected": "Determine if 12s is sustainable"
             },
             {
                 "phase": 2,
-                "name": "Very Aggressive 8s",
-                "description": "8s polling - approaching theoretical limits",
-                "duration": medium,
-                "update_every": 8,
-                "ofdm_multiple": 9999,
-                "fast_timeout": 1,
-                "ofdm_timeout": 2,
-                "max_retries": 2,
-                "expected": "Testing near-optimal speed"
-            },
-            {
-                "phase": 2,
-                "name": "Ultra Aggressive 6s",
-                "description": "6s polling - 3x collection time",
-                "duration": short,
-                "update_every": 6,
-                "ofdm_multiple": 9999,
-                "fast_timeout": 1,
-                "ofdm_timeout": 2,
-                "max_retries": 2,
-                "expected": "May hit limits"
-            },
-            {
-                "phase": 2,
-                "name": "Extreme 5s",
-                "description": "5s polling - theoretical minimum",
-                "duration": short,
-                "update_every": 5,
-                "ofdm_multiple": 9999,
-                "fast_timeout": 1,
-                "ofdm_timeout": 2,
-                "max_retries": 1,
-                "expected": "Likely too aggressive"
-            },
-            {
-                "phase": 2,
-                "name": "Breaking Point 4s",
-                "description": "4s polling - beyond safe limits",
-                "duration": short,
-                "update_every": 4,
-                "ofdm_multiple": 9999,
-                "fast_timeout": 1,
-                "ofdm_timeout": 2,
-                "max_retries": 1,
-                "expected": "Designed to break"
-            },
-            
-            # PHASE 3: OFDM Polling with Optimized Timeouts
-            {
-                "phase": 3,
-                "name": "OFDM Every 60s",
-                "description": "OFDM polling with fast timeouts",
-                "duration": short,
-                "update_every": 60,
-                "ofdm_multiple": 1,     # OFDM every cycle
-                "fast_timeout": 1,
-                "ofdm_timeout": 2,      # Much faster than 8s
-                "max_retries": 2,
-                "expected": "Should be very fast"
-            },
-            {
-                "phase": 3,
-                "name": "OFDM Every 45s",
-                "description": "Faster OFDM with optimized timeouts",
-                "duration": medium,
-                "update_every": 45,
-                "ofdm_multiple": 1,
-                "fast_timeout": 1,
-                "ofdm_timeout": 2,
-                "max_retries": 2,
-                "expected": "Testing OFDM limits with fast timeouts"
-            },
-            {
-                "phase": 3,
-                "name": "OFDM Every 30s",
-                "description": "Very aggressive OFDM polling",
-                "duration": short,
-                "update_every": 30,
-                "ofdm_multiple": 1,
-                "fast_timeout": 1,
-                "ofdm_timeout": 2,
-                "max_retries": 1,
-                "expected": "May be too fast for OFDM endpoints"
-            },
-            
-            # PHASE 4: Optimal Tiered Configurations
-            {
-                "phase": 4,
-                "name": "Optimal Tiered 10s/5min",
-                "description": "10s fast polling, 5min OFDM with optimized timeouts",
-                "duration": long,
+                "name": "10s Performance Limit",
+                "description": "Test 10s polling to find performance breaking point",
+                "duration": medium,  # 3 hours
                 "update_every": 10,
-                "ofdm_multiple": 30,    # 10s * 30 = 5min OFDM
+                "ofdm_multiple": 30,  # 5-minute OFDM
                 "fast_timeout": 1,
-                "ofdm_timeout": 2,
+                "ofdm_timeout": 3,
                 "max_retries": 2,
-                "expected": "Optimal production config"
+                "expected": "Identify performance limits"
             },
             {
-                "phase": 4,
-                "name": "Ultra Tiered 8s/5min",
-                "description": "8s fast polling, 5min OFDM - maximum performance",
-                "duration": long,
+                "phase": 2,
+                "name": "8s Breaking Point",
+                "description": "Test 8s polling - designed to find absolute limits",
+                "duration": short,   # 2 hours - failure detection
                 "update_every": 8,
-                "ofdm_multiple": 37,    # 8s * 37 = ~5min OFDM
+                "ofdm_multiple": 37,  # ~5-minute OFDM
                 "fast_timeout": 1,
                 "ofdm_timeout": 2,
                 "max_retries": 2,
-                "expected": "Maximum sustainable performance"
+                "expected": "Document failure modes at aggressive settings"
+            },
+            
+            # PHASE 3: OFDM Optimization (6 hours total)  
+            {
+                "phase": 3,
+                "name": "OFDM 3-Minute Cycles",
+                "description": "Test 3-minute OFDM cycles for optimal balance",
+                "duration": medium,  # 3 hours
+                "update_every": 15,
+                "ofdm_multiple": 12,  # 3-minute OFDM
+                "fast_timeout": 1,
+                "ofdm_timeout": 4,
+                "max_retries": 3,
+                "expected": "Validate 3-minute OFDM as sweet spot"
             },
             {
-                "phase": 4,
-                "name": "Extended Validation",
-                "description": "Long-term stability test with optimal settings",
-                "duration": long if self.quick_mode else long * 2,
-                "update_every": 12,     # Slightly conservative for long-term
-                "ofdm_multiple": 25,    # 12s * 25 = 5min OFDM
+                "phase": 3,
+                "name": "OFDM 2-Minute Aggressive",
+                "description": "Test aggressive 2-minute OFDM cycles",
+                "duration": medium,  # 3 hours
+                "update_every": 15,
+                "ofdm_multiple": 8,   # 2-minute OFDM
                 "fast_timeout": 1,
-                "ofdm_timeout": 2,
-                "max_retries": 3,       # Extra retries for stability
-                "expected": "Sustained optimal performance"
+                "ofdm_timeout": 3,
+                "max_retries": 2,
+                "expected": "Test OFDM frequency limits"
+            },
+            
+            # PHASE 4: Optimal Configuration Validation (4 hours total)
+            {
+                "phase": 4,
+                "name": "Production Optimal Config",
+                "description": "Extended validation of best performing configuration",
+                "duration": long,    # 4 hours - high confidence validation
+                "update_every": 12,  # Based on phase 2 results
+                "ofdm_multiple": 15, # 3-minute OFDM
+                "fast_timeout": 1,
+                "ofdm_timeout": 3,
+                "max_retries": 3,
+                "expected": "Final validation of optimal settings"
             }
         ]
         
         return tests
 
     async def run_all_tests(self):
-        """Execute all tests in the matrix."""
-        logger.info(f"Starting test suite: {len(self.tests)} tests")
-        total_duration = sum(t['duration'] for t in self.tests) / 60
-        logger.info(f"Estimated duration: {total_duration:.0f} minutes")
+        """Execute all tests in the matrix optimized for 18-24 hour completion."""
+        logger.info(f"Starting optimized test suite: {len(self.tests)} tests")
+        total_duration = sum(t['duration'] for t in self.tests)
+        total_hours = total_duration / 3600
+        
+        logger.info(f"📊 Test Plan Summary:")
+        logger.info(f"   Total runtime: {total_hours:.1f} hours")
+        logger.info(f"   Tests per phase: Phase 1 (2), Phase 2 (3), Phase 3 (2), Phase 4 (1)")
+        logger.info(f"   Expected data points: {sum(int(t['duration'] / t['update_every']) for t in self.tests):,}")
+        logger.info(f"   Target completion: {total_hours:.1f} hours from now")
+        
+        # Calculate expected completion time
+        from datetime import datetime, timedelta
+        completion_time = datetime.now() + timedelta(seconds=total_duration)
+        logger.info(f"   Estimated completion: {completion_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        if total_hours > 25:
+            logger.warning(f"⚠️ Runtime slightly over target ({total_hours:.1f} hours)")
+        elif total_hours < 15:
+            logger.warning(f"⚠️ Runtime might be too short for comprehensive analysis ({total_hours:.1f} hours)")
+        else:
+            logger.info(f"✅ Optimal runtime for comprehensive analysis ({total_hours:.1f} hours)")
         
         for i, test in enumerate(self.tests, 1):
             if not self.is_running:
                 logger.warning("Test suite stopped by user")
                 break
             
-            # Calculate test estimates
-            update_every = test['update_every']
-            duration_min = test['duration'] / 60
-            expected_cycles = int(test['duration'] / update_every)
+            # Calculate test metrics
+            duration_hours = test['duration'] / 3600
+            expected_cycles = int(test['duration'] / test['update_every'])
             
-            # Estimate collection time based on endpoint count
-            if test['ofdm_multiple'] >= 999:  # Fast endpoints only
-                estimated_collection_time = 1.3  # 5 endpoints, based on your data
-                endpoint_description = "5 fast endpoints only"
+            # Estimate statistical confidence
+            if expected_cycles >= 5000:
+                confidence = "Very High"
+            elif expected_cycles >= 2000:
+                confidence = "High"
+            elif expected_cycles >= 1000:
+                confidence = "Good"
             else:
-                estimated_collection_time = 1.8  # All endpoints
-                endpoint_description = "5 fast + 2 OFDM endpoints"
+                confidence = "Moderate"
             
-            collection_efficiency = (estimated_collection_time / update_every) * 100
-            idle_time = 100 - collection_efficiency
-            
-            logger.info(f"\n{'='*60}")
+            logger.info(f"\n{'='*80}")
             logger.info(f"TEST {i}/{len(self.tests)}: {test['name']}")
             logger.info(f"Phase {test['phase']}: {test['description']}")
             logger.info(f"Expected: {test['expected']}")
-            logger.info(f"Duration: {duration_min:.0f} minutes")
-            logger.info(f"📊 Test Estimates:")
-            logger.info(f"   Polling interval: {update_every}s ({endpoint_description})")
-            logger.info(f"   Expected cycles: {expected_cycles} cycles")
-            logger.info(f"   Est. collection time: {estimated_collection_time:.1f}s")
-            logger.info(f"   Collection efficiency: {collection_efficiency:.1f}% (idle: {idle_time:.1f}%)")
+            logger.info(f"⏱️ Duration: {duration_hours:.1f} hours")
+            logger.info(f"📊 Analysis:")
+            logger.info(f"   Expected cycles: {expected_cycles:,}")
+            logger.info(f"   Statistical confidence: {confidence}")
+            logger.info(f"   Polling: {test['update_every']}s fast, OFDM every {test['ofdm_multiple']}x")
             logger.info(f"   Timeouts: fast={test['fast_timeout']}s, OFDM={test['ofdm_timeout']}s")
-            logger.info(f"{'='*60}")
+            logger.info(f"{'='*80}")
             
             await asyncio.sleep(2)  # Brief pause
             
@@ -292,20 +273,30 @@ class HitronTestSuite:
             self._save_progress()
             self._analyze_result(result)
             
+            # Show progress toward completion
+            completed_tests = i
+            remaining_tests = len(self.tests) - i
+            if remaining_tests > 0:
+                remaining_duration = sum(t['duration'] for t in self.tests[i:])
+                remaining_hours = remaining_duration / 3600
+                logger.info(f"📈 Progress: {completed_tests}/{len(self.tests)} tests completed")
+                logger.info(f"⏱️ Remaining: {remaining_hours:.1f} hours ({remaining_tests} tests)")
+            
             # Pause between tests
             if i < len(self.tests) and self.is_running:
-                logger.info("Brief pause before next test...")
+                logger.info("📊 Analyzing results and preparing next test...")
                 for countdown in range(10, 0, -1):
                     if not self.is_running:
                         break
-                    logger.info(f"Next test in {countdown}s...")
+                    if countdown % 3 == 0:
+                        logger.info(f"Next test in {countdown}s...")
                     await asyncio.sleep(1)
         
-        logger.info("\nAll tests completed!")
+        logger.info("\n🎯 18-24 hour test suite completed!")
         self._generate_final_analysis()
 
     async def _run_test(self, test):
-        """Run a single test with improved output handling."""
+        """Run a single test with enhanced statistical logging."""
         start_time = time.time()
         
         # Build command
@@ -321,9 +312,9 @@ class HitronTestSuite:
             '--serial'
         ]
         
-        logger.info(f"Command: {' '.join(cmd)}")
-        print("\n🔄 SIMULATOR OUTPUT:")
-        print("=" * 60)
+        logger.info(f"🚀 Command: {' '.join(cmd)}")
+        print("\n📊 SIMULATOR OUTPUT (Statistical Analysis):")
+        print("=" * 80)
         
         try:
             process = await asyncio.create_subprocess_exec(
@@ -336,7 +327,7 @@ class HitronTestSuite:
             all_stderr_lines = []
             json_report = {}
             
-            # Read stdout and stderr concurrently
+            # Read stdout and stderr concurrently with statistical focus
             async def read_stdout():
                 while True:
                     line_bytes = await process.stdout.readline()
@@ -347,22 +338,23 @@ class HitronTestSuite:
                     all_stdout_lines.append(line)
                     
                     if line.strip():
-                        # Handle different types of output
+                        # Handle different types of output - focus on statistical data
                         if line.startswith('{') and line.endswith('}'):
-                            # This is the JSON report - capture it
+                            # JSON report - capture it
                             try:
                                 json_report.update(json.loads(line))
                             except json.JSONDecodeError:
                                 pass
-                        elif any(keyword in line for keyword in ['Progress:', 'INFO', 'Enhanced Simulator', 'Collection mode:', 'SIMULATION FINAL REPORT']):
-                            # Show informational and progress lines
+                        elif any(keyword in line for keyword in ['Progress:', 'SUCCESS', 'FAILED', 'Success Rate:', 'Collection Time:']):
+                            # Show progress and key statistics
                             print(line)
-                        elif 'Configuration:' in line or 'Cycle Results:' in line or 'Assessment:' in line:
-                            # Show report section headers
+                        elif 'cycles' in line.lower() and any(stat in line for stat in ['%', 'ms', 'avg', 'max']):
+                            # Show statistical summaries
                             print(line)
-                        elif any(result in line for result in ['Success Rate:', 'Collection Time:', 'Overall Rating:']):
-                            # Show key results
+                        elif line.startswith('SIMULATION FINAL REPORT'):
+                            print("\n" + "="*60)
                             print(line)
+                            print("="*60)
             
             async def read_stderr():
                 while True:
@@ -373,7 +365,6 @@ class HitronTestSuite:
                     line = line_bytes.decode('utf-8').rstrip()
                     all_stderr_lines.append(line)
                     
-                    # Show actual error lines immediately
                     if line.strip():
                         print(f"STDERR: {line}")
             
@@ -383,18 +374,24 @@ class HitronTestSuite:
             
             duration = time.time() - start_time
             
-            print("=" * 60)
-            logger.info(f"Test completed in {duration:.1f}s")
+            print("=" * 80)
+            logger.info(f"📊 Test completed in {duration/3600:.2f} hours")
             
-            # Check for common failure patterns
+            # Enhanced success validation for statistical significance
             success_indicators = [
-                json_report,  # Got JSON report
+                json_report.get('cycle_success_rate', 0) > 0,  # Got meaningful data
+                json_report.get('total_cycles', 0) >= test['duration'] / test['update_every'] * 0.8,  # Got most expected cycles
                 process.returncode == 0,  # Clean exit
                 any('SIMULATION FINAL REPORT' in line for line in all_stdout_lines),  # Report generated
                 not any('Failed to generate report' in line for line in all_stderr_lines)  # No report errors
             ]
             
             test_success = all(success_indicators)
+            
+            # Calculate statistical metrics
+            expected_cycles = int(test['duration'] / test['update_every'])
+            actual_cycles = json_report.get('total_cycles', 0)
+            completion_rate = (actual_cycles / expected_cycles * 100) if expected_cycles > 0 else 0
             
             result = {
                 "phase": test['phase'],
@@ -406,6 +403,13 @@ class HitronTestSuite:
                     "fast_timeout": test['fast_timeout'],
                     "ofdm_timeout": test['ofdm_timeout'],
                     "max_retries": test['max_retries']
+                },
+                "statistical_metrics": {
+                    "expected_cycles": expected_cycles,
+                    "actual_cycles": actual_cycles,
+                    "completion_rate": completion_rate,
+                    "duration_hours": duration / 3600,
+                    "data_points_per_hour": int(3600 / test['update_every'])
                 },
                 "command": ' '.join(cmd),
                 "return_code": process.returncode,
@@ -425,11 +429,17 @@ class HitronTestSuite:
                 "name": test['name'],
                 "success": False,
                 "error": str(e),
-                "duration": time.time() - start_time
+                "duration": time.time() - start_time,
+                "statistical_metrics": {
+                    "expected_cycles": int(test['duration'] / test['update_every']),
+                    "actual_cycles": 0,
+                    "completion_rate": 0,
+                    "duration_hours": (time.time() - start_time) / 3600
+                }
             }
 
     def _analyze_result(self, result):
-        """Analyze and display test result with polling calculations."""
+        """Analyze and display test result with statistical focus."""
         if not result['success']:
             logger.error(f"❌ {result['name']}: FAILED")
             if 'error' in result:
@@ -444,129 +454,201 @@ class HitronTestSuite:
         
         report = result['simulator_report']
         config = result['config']
+        stats = result['statistical_metrics']
+        
+        # Key metrics
         success_rate = report.get('cycle_success_rate', 0)
         failed_cycles = report.get('failed_cycles', 0)
         max_consecutive_failures = report.get('max_consecutive_failures', 0)
         avg_time = report.get('avg_collection_time', 0)
-        total_cycles = report.get('total_cycles', 0)
         
-        # Calculate polling efficiency and estimates
-        update_every = config['update_every']
-        test_duration = result['duration']
-        expected_cycles = int(test_duration / update_every)
-        actual_cycles = total_cycles
-        completion_rate = (actual_cycles / expected_cycles * 100) if expected_cycles > 0 else 0
+        # Statistical significance indicators
+        completion_rate = stats['completion_rate']
+        data_points = stats['actual_cycles']
+        duration_hours = stats['duration_hours']
         
-        # Calculate collection efficiency
-        collection_efficiency = (avg_time / update_every * 100) if update_every > 0 else 0
-        idle_time_percent = 100 - collection_efficiency
+        # Determine statistical confidence level
+        if data_points >= 10000:
+            confidence = "Very High (10k+ samples)"
+        elif data_points >= 5000:
+            confidence = "High (5k+ samples)"
+        elif data_points >= 1000:
+            confidence = "Good (1k+ samples)"
+        elif data_points >= 500:
+            confidence = "Moderate (500+ samples)"
+        else:
+            confidence = "Low (<500 samples)"
         
-        # Theoretical maximum polling frequency (3x collection time for safety)
-        min_safe_interval = avg_time * 3
-        max_theoretical_frequency = 1 / min_safe_interval if min_safe_interval > 0 else 0
-        
-        # Failure detection
+        # Performance assessment
         failures = []
-        if failed_cycles >= 2:
+        if failed_cycles >= 10:
             failures.append(f"{failed_cycles} failed cycles")
-        
-        # Calculate unavailability (consecutive failures * interval)
-        unavailable_time = max_consecutive_failures * update_every
-        if unavailable_time >= 30:
-            failures.append(f"{unavailable_time}s unavailable")
-        
-        if success_rate < 85:
+        if max_consecutive_failures >= 5:
+            failures.append(f"{max_consecutive_failures} consecutive failures")
+        if success_rate < 90:
             failures.append(f"low success rate ({success_rate:.1f}%)")
+        if completion_rate < 90:
+            failures.append(f"incomplete data ({completion_rate:.1f}%)")
         
-        # Determine status
+        # Determine status with statistical context
         if failures:
             status = f"❌ FAILED ({', '.join(failures)})"
             logger.error(status)
-        elif success_rate >= 99:
+        elif success_rate >= 99 and completion_rate >= 95:
             status = "✅ EXCELLENT"
             logger.info(status)
-        elif success_rate >= 95:
+        elif success_rate >= 95 and completion_rate >= 90:
             status = "✅ GOOD"
             logger.info(status)
-        elif success_rate >= 90:
+        elif success_rate >= 90 and completion_rate >= 85:
             status = "⚠️ MARGINAL"
             logger.warning(status)
         else:
             status = "❌ POOR"
             logger.error(status)
         
-        # Display results with polling calculations and emojis
-        logger.info(f"   📊 Success Rate: {success_rate:.1f}%")
-        logger.info(f"   ❌ Failed Cycles: {failed_cycles}")
-        logger.info(f"   🔄 Max Consecutive Failures: {max_consecutive_failures}")
-        logger.info(f"   ⏱️ Avg Collection Time: {avg_time:.2f}s")
-        logger.info(f"   📈 Collection Efficiency: {collection_efficiency:.1f}% (💤 idle: {idle_time_percent:.1f}%)")
-        logger.info(f"   🔢 Polling Stats: {actual_cycles}/{expected_cycles} cycles ({completion_rate:.1f}% completion)")
+        # Display statistical analysis
+        logger.info(f"📊 Statistical Analysis:")
+        logger.info(f"   Success Rate: {success_rate:.2f}%")
+        logger.info(f"   Data Completion: {completion_rate:.1f}% ({data_points:,}/{stats['expected_cycles']:,} cycles)")
+        logger.info(f"   Statistical Confidence: {confidence}")
+        logger.info(f"   Test Duration: {duration_hours:.2f} hours")
+        logger.info(f"   Data Density: {stats['data_points_per_hour']} points/hour")
+        logger.info(f"   Failed Cycles: {failed_cycles}")
+        logger.info(f"   Max Consecutive Failures: {max_consecutive_failures}")
+        logger.info(f"   Avg Collection Time: {avg_time:.2f}ms")
         
-        if max_theoretical_frequency > 0:
-            logger.info(f"   🚀 Theoretical Max Frequency: {max_theoretical_frequency:.2f} polls/sec (every {min_safe_interval:.1f}s)")
+        # Performance efficiency analysis
+        update_every = config['update_every']
+        collection_efficiency = (avg_time / (update_every * 1000)) * 100 if update_every > 0 else 0
+        theoretical_max_freq = 1000 / avg_time if avg_time > 0 else 0  # max polls per second
+        actual_freq = 1 / update_every if update_every > 0 else 0
         
-        # Performance recommendations with emojis
-        if success_rate >= 95 and collection_efficiency < 50:
-            recommended_interval = max(4, int(avg_time * 2.5))  # 2.5x safety margin
-            improvement_factor = update_every / recommended_interval
-            logger.info(f"   💡 Recommendation: Could poll every {recommended_interval}s ({improvement_factor:.1f}x faster)")
-        elif success_rate >= 95 and collection_efficiency < 80:
-            logger.info(f"   ✨ Performance: Excellent efficiency, minor optimization possible")
-        elif success_rate < 95:
-            logger.warning(f"   ⚠️ Recommendation: Increase interval or timeouts for stability")
+        logger.info(f"📈 Performance Analysis:")
+        logger.info(f"   Collection Efficiency: {collection_efficiency:.1f}% (avg time vs interval)")
+        logger.info(f"   Actual Frequency: {actual_freq:.3f} polls/sec")
+        logger.info(f"   Theoretical Max: {theoretical_max_freq:.3f} polls/sec")
+        
+        # Statistical recommendations
+        if data_points >= 5000 and success_rate >= 95:
+            logger.info(f"   ✅ RECOMMENDATION: Configuration validated with high confidence")
+        elif data_points >= 1000 and success_rate >= 90:
+            logger.info(f"   ✅ RECOMMENDATION: Configuration acceptable for production")
+        elif success_rate < 85:
+            logger.info(f"   ❌ RECOMMENDATION: Configuration unsuitable - too many failures")
+        elif completion_rate < 80:
+            logger.info(f"   ⚠️ RECOMMENDATION: Test incomplete - results may not be reliable")
+        else:
+            logger.info(f"   ⚠️ RECOMMENDATION: More testing needed for confidence")
+        
+        # Optimization suggestions
+        if collection_efficiency < 30 and success_rate > 95:
+            suggested_interval = max(4, int(avg_time / 1000 * 2.5))
+            improvement_factor = update_every / suggested_interval
+            logger.info(f"   💡 OPTIMIZATION: Could poll every {suggested_interval}s ({improvement_factor:.1f}x faster)")
+        
+        if max_consecutive_failures == 0 and success_rate >= 99:
+            logger.info(f"   💡 OPTIMIZATION: Perfect reliability - consider more aggressive settings")
 
     def _save_progress(self):
-        """Save current progress."""
+        """Save current progress with enhanced statistics."""
         progress_file = self.results_dir / "progress.json"
-        with open(progress_file, 'w') as f:
-            json.dump({
-                "start_time": self.start_time.isoformat(),
-                "current_time": datetime.now().isoformat(),
-                "completed": len(self.test_results),
-                "total": len(self.tests),
-                "results": self.test_results
-            }, f, indent=2)
         
-        # CSV summary
+        # Calculate summary statistics
+        completed_tests = len(self.test_results)
+        successful_tests = sum(1 for r in self.test_results if r['success'])
+        
+        # Analyze trends across tests
+        success_rates = []
+        response_times = []
+        for result in self.test_results:
+            if result['success'] and result.get('simulator_report'):
+                report = result['simulator_report']
+                success_rates.append(report.get('cycle_success_rate', 0))
+                response_times.append(report.get('avg_collection_time', 0))
+        
+        progress_data = {
+            "start_time": self.start_time.isoformat(),
+            "current_time": datetime.now().isoformat(),
+            "completed": completed_tests,
+            "total": len(self.tests),
+            "successful_tests": successful_tests,
+            "test_success_rate": (successful_tests / completed_tests * 100) if completed_tests > 0 else 0,
+            "summary_statistics": {
+                "avg_success_rate": sum(success_rates) / len(success_rates) if success_rates else 0,
+                "avg_response_time": sum(response_times) / len(response_times) if response_times else 0,
+                "best_success_rate": max(success_rates) if success_rates else 0,
+                "worst_success_rate": min(success_rates) if success_rates else 0
+            },
+            "results": self.test_results
+        }
+        
+        with open(progress_file, 'w') as f:
+            json.dump(progress_data, f, indent=2)
+        
+        # Enhanced CSV summary
         if self.test_results:
             csv_file = self.results_dir / "summary.csv"
             with open(csv_file, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Phase', 'Test', 'Success', 'Success Rate %', 'Failed Cycles', 'Max Consecutive', 'Avg Time', 'Config'])
+                writer.writerow([
+                    'Phase', 'Test', 'Success', 'Duration_Hours', 'Success_Rate_%', 
+                    'Failed_Cycles', 'Max_Consecutive', 'Avg_Time_ms', 'Expected_Cycles',
+                    'Actual_Cycles', 'Completion_%', 'Config', 'Recommendation'
+                ])
                 
                 for result in self.test_results:
                     if result['success'] and result.get('simulator_report'):
                         report = result['simulator_report']
                         config = result.get('config', {})
+                        stats = result.get('statistical_metrics', {})
+                        
+                        # Generate recommendation
+                        success_rate = report.get('cycle_success_rate', 0)
+                        completion_rate = stats.get('completion_rate', 0)
+                        
+                        if success_rate >= 95 and completion_rate >= 90:
+                            recommendation = "EXCELLENT"
+                        elif success_rate >= 90 and completion_rate >= 85:
+                            recommendation = "GOOD"
+                        elif success_rate >= 85:
+                            recommendation = "MARGINAL"
+                        else:
+                            recommendation = "POOR"
+                        
                         config_str = f"every={config.get('update_every', '?')}s, ofdm_mult={config.get('ofdm_multiple', '?')}"
+                        
                         writer.writerow([
                             result['phase'],
                             result['name'],
                             'Yes',
-                            f"{report.get('cycle_success_rate', 0):.1f}",
+                            f"{stats.get('duration_hours', 0):.2f}",
+                            f"{success_rate:.1f}",
                             report.get('failed_cycles', 0),
                             report.get('max_consecutive_failures', 0),
                             f"{report.get('avg_collection_time', 0):.2f}",
-                            config_str
+                            stats.get('expected_cycles', 0),
+                            stats.get('actual_cycles', 0),
+                            f"{completion_rate:.1f}",
+                            config_str,
+                            recommendation
                         ])
                     else:
                         writer.writerow([
                             result['phase'],
                             result['name'],
                             'No',
-                            'N/A',
-                            'N/A',
-                            'N/A',
-                            'N/A',
-                            'FAILED'
+                            f"{result.get('duration', 0) / 3600:.2f}",
+                            'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A',
+                            'FAILED',
+                            'UNUSABLE'
                         ])
 
     def _generate_final_analysis(self):
-        """Generate final analysis and recommendations."""
-        logger.info("\n" + "="*60)
-        logger.info("FINAL ANALYSIS")
-        logger.info("="*60)
+        """Generate comprehensive final analysis and recommendations."""
+        logger.info("\n" + "="*80)
+        logger.info("FINAL ANALYSIS - OPTIMIZED 18-24 HOUR TEST SUITE")
+        logger.info("="*80)
         
         if not self.test_results:
             logger.warning("No results to analyze")
@@ -574,8 +656,10 @@ class HitronTestSuite:
         
         successful = [r for r in self.test_results if r['success'] and r.get('simulator_report')]
         
-        logger.info(f"Total tests: {len(self.test_results)}")
-        logger.info(f"Successful tests: {len(successful)}")
+        logger.info(f"📊 Test Suite Summary:")
+        logger.info(f"   Total tests: {len(self.test_results)}")
+        logger.info(f"   Successful tests: {len(successful)}")
+        logger.info(f"   Test success rate: {len(successful)/len(self.test_results)*100:.1f}%")
         
         if not successful:
             logger.error("No successful tests to analyze")
@@ -589,36 +673,153 @@ class HitronTestSuite:
                 phases[phase] = []
             phases[phase].append(test)
         
-        logger.info("\nPhase Results:")
+        logger.info(f"\n📈 Results by Phase:")
+        phase_names = {
+            1: "Baseline Establishment",
+            2: "Aggressive Polling Tests", 
+            3: "OFDM Optimization",
+            4: "Final Validation"
+        }
+        
         for phase in sorted(phases.keys()):
             tests = phases[phase]
-            logger.info(f"  Phase {phase}: {len(tests)} successful tests")
+            phase_name = phase_names.get(phase, f"Phase {phase}")
+            logger.info(f"  {phase_name}: {len(tests)} successful tests")
+            
+            for test in tests:
+                report = test['simulator_report']
             for test in tests:
                 report = test['simulator_report']
                 config = test['config']
                 success_rate = report.get('cycle_success_rate', 0)
                 avg_time = report.get('avg_collection_time', 0)
-                logger.info(f"    {test['name']:20} | {success_rate:5.1f}% | {avg_time:5.2f}s | every={config['update_every']}s")
+                stats = test.get('statistical_metrics', {})
+                completion = stats.get('completion_rate', 0)
+                
+                logger.info(f"    {test['name']:25} | {success_rate:5.1f}% | {avg_time:5.1f}ms | {completion:5.1f}% | every={config['update_every']}s")
         
-        # Find optimal configs
+        # Find optimal configurations
         stable = [t for t in successful if t['simulator_report'].get('cycle_success_rate', 0) >= 95]
         
         if stable:
-            fastest = min(stable, key=lambda t: t['config']['update_every'])
+            # Sort by polling frequency (fastest first)
+            stable_sorted = sorted(stable, key=lambda t: t['config']['update_every'])
+            
+            fastest = stable_sorted[0]
             most_reliable = max(stable, key=lambda t: t['simulator_report'].get('cycle_success_rate', 0))
             
-            logger.info(f"\nOptimal Configurations:")
-            logger.info(f"  Fastest Stable: {fastest['name']}")
-            logger.info(f"    Update Every: {fastest['config']['update_every']}s")
-            logger.info(f"    Success: {fastest['simulator_report']['cycle_success_rate']:.1f}%")
-            logger.info(f"    Time: {fastest['simulator_report']['avg_collection_time']:.2f}s")
+            logger.info(f"\n🏆 Optimal Configurations Found:")
             
-            logger.info(f"  Most Reliable: {most_reliable['name']}")
-            logger.info(f"    Update Every: {most_reliable['config']['update_every']}s")
-            logger.info(f"    Success: {most_reliable['simulator_report']['cycle_success_rate']:.1f}%")
-            logger.info(f"    Time: {most_reliable['simulator_report']['avg_collection_time']:.2f}s")
+            logger.info(f"  🚀 FASTEST STABLE:")
+            logger.info(f"     Configuration: {fastest['name']}")
+            logger.info(f"     Polling: Every {fastest['config']['update_every']}s")
+            logger.info(f"     OFDM: Every {fastest['config']['ofdm_multiple']}x ({fastest['config']['ofdm_multiple'] * fastest['config']['update_every']}s)")
+            logger.info(f"     Success Rate: {fastest['simulator_report']['cycle_success_rate']:.1f}%")
+            logger.info(f"     Avg Response: {fastest['simulator_report']['avg_collection_time']:.1f}ms")
+            logger.info(f"     Timeouts: Fast={fastest['config']['fast_timeout']}s, OFDM={fastest['config']['ofdm_timeout']}s")
+            
+            logger.info(f"  🎯 MOST RELIABLE:")
+            logger.info(f"     Configuration: {most_reliable['name']}")
+            logger.info(f"     Polling: Every {most_reliable['config']['update_every']}s")
+            logger.info(f"     OFDM: Every {most_reliable['config']['ofdm_multiple']}x ({most_reliable['config']['ofdm_multiple'] * most_reliable['config']['update_every']}s)")
+            logger.info(f"     Success Rate: {most_reliable['simulator_report']['cycle_success_rate']:.1f}%")
+            logger.info(f"     Avg Response: {most_reliable['simulator_report']['avg_collection_time']:.1f}ms")
+            logger.info(f"     Timeouts: Fast={most_reliable['config']['fast_timeout']}s, OFDM={most_reliable['config']['ofdm_timeout']}s")
+            
+            # Production recommendations
+            logger.info(f"\n💼 Production Recommendations:")
+            
+            if fastest['config']['update_every'] <= 12:
+                logger.info(f"  ✅ AGGRESSIVE PRODUCTION: Use fastest stable config ({fastest['config']['update_every']}s polling)")
+                logger.info(f"     - Excellent for high-frequency monitoring")
+                logger.info(f"     - Monitor for long-term stability")
+                logger.info(f"     - Consider fallback to conservative settings")
+            
+            if most_reliable['config']['update_every'] >= 15:
+                logger.info(f"  ✅ CONSERVATIVE PRODUCTION: Use most reliable config ({most_reliable['config']['update_every']}s polling)")
+                logger.info(f"     - Maximum stability for critical environments")
+                logger.info(f"     - Lower resource usage")
+                logger.info(f"     - Recommended for 24/7 operation")
+            
+            # Calculate performance gains
+            baseline_15s = next((t for t in successful if t['config']['update_every'] == 15), None)
+            if baseline_15s and fastest['config']['update_every'] < 15:
+                improvement_factor = 15 / fastest['config']['update_every']
+                logger.info(f"  📈 PERFORMANCE GAIN: {improvement_factor:.1f}x faster than 15s baseline")
         
-        logger.info(f"\nResults saved in: {self.results_dir}")
+        else:
+            logger.warning("⚠️ No stable configurations found (success rate >= 95%)")
+            # Show best available
+            if successful:
+                best = max(successful, key=lambda t: t['simulator_report'].get('cycle_success_rate', 0))
+                logger.info(f"  📊 BEST AVAILABLE:")
+                logger.info(f"     Configuration: {best['name']}")
+                logger.info(f"     Success Rate: {best['simulator_report']['cycle_success_rate']:.1f}%")
+                logger.info(f"     Recommendation: Needs optimization or longer testing")
+        
+        # Failure analysis
+        failed_tests = [r for r in self.test_results if not r['success'] or r.get('simulator_report', {}).get('cycle_success_rate', 0) < 85]
+        if failed_tests:
+            logger.info(f"\n❌ Failed/Poor Configurations:")
+            for test in failed_tests:
+                config = test.get('config', {})
+                if test.get('simulator_report'):
+                    success_rate = test['simulator_report'].get('cycle_success_rate', 0)
+                    logger.info(f"     {test['name']:25} | {success_rate:5.1f}% | every={config.get('update_every', '?')}s - TOO AGGRESSIVE")
+                else:
+                    logger.info(f"     {test['name']:25} | FAILED | every={config.get('update_every', '?')}s - UNUSABLE")
+        
+        # Save final configuration files
+        if stable:
+            self._generate_config_files(stable[0], most_reliable)
+        
+        logger.info(f"\n📁 Results saved in: {self.results_dir}")
+        logger.info("="*80)
+
+    def _generate_config_files(self, fastest_config, reliable_config):
+        """Generate ready-to-use configuration files."""
+        
+        # Fastest stable configuration
+        fastest_conf = self.results_dir / "hitron_coda_aggressive.conf"
+        with open(fastest_conf, 'w') as f:
+            f.write("# Hitron CODA Aggressive Configuration\n")
+            f.write("# Generated from 18-24 hour test suite\n")
+            f.write(f"# Based on test: {fastest_config['name']}\n")
+            f.write(f"# Success rate: {fastest_config['simulator_report']['cycle_success_rate']:.1f}%\n\n")
+            
+            f.write("localhost:\n")
+            f.write("  name: 'hitron_coda'\n")
+            f.write("  host: 'https://192.168.100.1'  # Update to your modem IP\n")
+            f.write("  device_name: 'Hitron CODA Cable Modem'\n")
+            f.write(f"  update_every: {fastest_config['config']['update_every']}\n")
+            f.write(f"  ofdm_poll_multiple: {fastest_config['config']['ofdm_multiple']}\n")
+            f.write("  parallel_collection: false\n")
+            f.write(f"  fast_endpoint_timeout: {fastest_config['config']['fast_timeout']}\n")
+            f.write(f"  ofdm_endpoint_timeout: {fastest_config['config']['ofdm_timeout']}\n")
+            f.write(f"  max_retries: {fastest_config['config']['max_retries']}\n")
+        
+        # Most reliable configuration  
+        reliable_conf = self.results_dir / "hitron_coda_production.conf"
+        with open(reliable_conf, 'w') as f:
+            f.write("# Hitron CODA Production Configuration\n")
+            f.write("# Generated from 18-24 hour test suite\n")
+            f.write(f"# Based on test: {reliable_config['name']}\n")
+            f.write(f"# Success rate: {reliable_config['simulator_report']['cycle_success_rate']:.1f}%\n\n")
+            
+            f.write("localhost:\n")
+            f.write("  name: 'hitron_coda'\n")
+            f.write("  host: 'https://192.168.100.1'  # Update to your modem IP\n")
+            f.write("  device_name: 'Hitron CODA Cable Modem'\n")
+            f.write(f"  update_every: {reliable_config['config']['update_every']}\n")
+            f.write(f"  ofdm_poll_multiple: {reliable_config['config']['ofdm_multiple']}\n")
+            f.write("  parallel_collection: false\n")
+            f.write(f"  fast_endpoint_timeout: {reliable_config['config']['fast_timeout']}\n")
+            f.write(f"  ofdm_endpoint_timeout: {reliable_config['config']['ofdm_timeout']}\n")
+            f.write(f"  max_retries: {reliable_config['config']['max_retries']}\n")
+        
+        logger.info(f"📝 Generated configuration files:")
+        logger.info(f"   Aggressive: {fastest_conf}")
+        logger.info(f"   Production: {reliable_conf}")
 
 
 def signal_handler(test_suite):
@@ -633,13 +834,13 @@ def signal_handler(test_suite):
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description='Hitron CODA Aggressive Limit Testing')
+    parser = argparse.ArgumentParser(description='Hitron CODA 18-24 Hour Optimized Test Suite')
     parser.add_argument('--simulator', default='netdata_simulator.py',
                        help='Path to simulator script')
     parser.add_argument('--host', default='https://192.168.100.1',
                        help='Modem host URL')
     parser.add_argument('--quick', action='store_true',
-                       help='Run shorter tests')
+                       help='Run slightly shorter tests (still 18+ hours total)')
     
     args = parser.parse_args()
     
@@ -669,7 +870,7 @@ def main():
         logger.error(f"Test suite failed: {e}")
         sys.exit(1)
     
-    logger.info("Test suite completed!")
+    logger.info("18-24 hour test suite completed!")
 
 
 if __name__ == "__main__":
