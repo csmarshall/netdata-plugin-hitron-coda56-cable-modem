@@ -11,7 +11,7 @@ Key Features:
 - Comprehensive monitoring of 50+ metrics across 15 charts
 - Built-in health monitoring and performance tracking
 
-Version: 2.0.0
+Version: 2.0.1 - Corrected system info endpoint from getViewInfo to getSysInfo.
 Author: Enhanced for production stability and performance
 """
 
@@ -24,6 +24,7 @@ import ssl
 import requests
 import urllib3
 import logging
+import re
 from datetime import datetime
 from bases.FrameworkServices.SimpleService import SimpleService
 
@@ -58,7 +59,7 @@ class Service(SimpleService):
         'dsinfo.asp',         # Downstream QAM channels (31 channels)
         'usinfo.asp',         # Upstream QAM channels (5 channels)
         'getCmDocsisWan.asp', # WAN status information
-        'getViewInfo.asp'     # System uptime and status
+        'getSysInfo.asp'      # System uptime and status (Corrected Endpoint)
     ]
     
     SLOW_ENDPOINTS = [
@@ -214,15 +215,15 @@ class Service(SimpleService):
         
         try:
             # Test with a fast, lightweight endpoint
-            url = f"{self.host}/data/getViewInfo.asp"
+            url = f"{self.host}/data/getSysInfo.asp"
             response = requests.get(url, verify=False, timeout=10)
             
             if response.status_code == 200:
                 try:
                     data = response.json()
-                    if 'getViewInfo' in data and data['getViewInfo']:
-                        sys_desc = data['getViewInfo'][0].get('SysDesc', 'Unknown')
-                        logger.info(f"[{self.name}] Successfully connected to modem: {sys_desc}")
+                    if isinstance(data, list) and data:
+                        sw_version = data[0].get('swVersion', 'Unknown')
+                        logger.info(f"[{self.name}] Successfully connected to modem, SW Version: {sw_version}")
                         return True
                 except (json.JSONDecodeError, KeyError, IndexError):
                     pass
@@ -365,7 +366,7 @@ class Service(SimpleService):
         with requests.Session() as session:
             session.verify = False
             session.headers.update({
-                'User-Agent': 'Netdata-Hitron-Plugin/2.0.0',
+                'User-Agent': 'Netdata-Hitron-Plugin/2.0.1',
                 'Accept': 'application/json, */*',
                 'Connection': 'close'
             })
@@ -375,7 +376,7 @@ class Service(SimpleService):
                 for attempt in range(self.max_retries):
                     try:
                         url = f"{self.host}/data/{endpoint}"
-                        response = session.get(url, timeout=self.endpoint_timeout)
+                        response = session.get(url, timeout=self.endpoint_timeouts.get(endpoint))
                         response.raise_for_status()
                         
                         data[endpoint] = response.json()
@@ -406,13 +407,11 @@ class Service(SimpleService):
             enable_cleanup_closed=True
         )
         
-        timeout = aiohttp.ClientTimeout(total=self.collection_timeout, sock_read=self.endpoint_timeout)
-        
+        # Overall collection timeout is handled by asyncio.gather, individual request timeouts are below
         async with aiohttp.ClientSession(
             connector=connector, 
-            timeout=timeout,
             headers={
-                'User-Agent': 'Netdata-Hitron-Plugin/2.0.0',
+                'User-Agent': 'Netdata-Hitron-Plugin/2.0.1',
                 'Accept': 'application/json, */*'
             }
         ) as session:
@@ -432,11 +431,13 @@ class Service(SimpleService):
     async def _fetch_endpoint_async(self, session, endpoint):
         """Async helper to fetch a single endpoint with retries and per-endpoint timeouts."""
         url = f"{self.host}/data/{endpoint}"
-        endpoint_timeout = self.endpoint_timeouts.get(endpoint, self.endpoint_timeout)
+        endpoint_timeout = self.endpoint_timeouts.get(endpoint, 5) # Default 5s
         
         for attempt in range(self.max_retries):
             try:
-                async with session.get(url, timeout=endpoint_timeout) as response:
+                # Use an individual timeout for each request attempt
+                timeout = aiohttp.ClientTimeout(total=endpoint_timeout)
+                async with session.get(url, timeout=timeout) as response:
                     response.raise_for_status()
                     logger.debug(f"[{self.name}] {endpoint}: Success on attempt {attempt + 1} (timeout: {endpoint_timeout}s)")
                     return await response.json()
@@ -446,8 +447,46 @@ class Service(SimpleService):
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(1)
         
-        logger.warning(f"[{self.name}] {endpoint}: All async attempts failed")
+        logger.warning(f"[{self.name}] {endpoint}: All {self.max_retries} async attempts failed")
         return None
+
+    def _parse_uptime_string(self, uptime_str: str) -> int:
+        """Parse uptime string like '24h:30m:59s' into total seconds."""
+        if not isinstance(uptime_str, str):
+            return 0
+            
+        total_seconds = 0
+        try:
+            # Using regex to find days, hours, minutes, and seconds
+            parts = {
+                'd': r'(\d+)\s*d',
+                'h': r'(\d+)\s*h',
+                'm': r'(\d+)\s*m',
+                's': r'(\d+)\s*s'
+            }
+            
+            # Extract values and calculate total seconds
+            days = re.search(parts['d'], uptime_str)
+            if days:
+                total_seconds += int(days.group(1)) * 86400
+                
+            hours = re.search(parts['h'], uptime_str)
+            if hours:
+                total_seconds += int(hours.group(1)) * 3600
+                
+            minutes = re.search(parts['m'], uptime_str)
+            if minutes:
+                total_seconds += int(minutes.group(1)) * 60
+                
+            seconds = re.search(parts['s'], uptime_str)
+            if seconds:
+                total_seconds += int(seconds.group(1))
+                
+        except (ValueError, IndexError) as e:
+            logger.debug(f"[{self.name}] Could not parse uptime string '{uptime_str}': {e}")
+            return 0
+            
+        return total_seconds
 
     def _process_and_define_charts(self, api_data):
         """Parse API data and populate self.data for Netdata."""
@@ -517,14 +556,14 @@ class Service(SimpleService):
                     logger.debug(f"[{self.name}] Error processing upstream OFDM: {e}")
 
         # --- Process System Information ---
-        if 'getViewInfo.asp' in api_data and 'getViewInfo' in api_data['getViewInfo.asp']:
-            if api_data['getViewInfo.asp']['getViewInfo']:
-                try:
-                    view_info = api_data['getViewInfo.asp']['getViewInfo'][0]
-                    self.data['system_uptime'] = int(view_info.get('SysUpTime', 0))
-                    
-                except (ValueError, KeyError) as e:
-                    logger.debug(f"[{self.name}] Error processing system info: {e}")
+        if 'getSysInfo.asp' in api_data and isinstance(api_data['getSysInfo.asp'], list) and api_data['getSysInfo.asp']:
+            try:
+                sys_info = api_data['getSysInfo.asp'][0]
+                uptime_str = sys_info.get('systemUptime', '')
+                self.data['system_uptime'] = self._parse_uptime_string(uptime_str)
+                
+            except (ValueError, KeyError, IndexError) as e:
+                logger.debug(f"[{self.name}] Error processing system info: {e}")
 
         # --- Process WAN Information ---
         if 'getCmDocsisWan.asp' in api_data and 'getCmDocsisWan' in api_data['getCmDocsisWan.asp']:
@@ -570,14 +609,17 @@ class Service(SimpleService):
         add_line('plugin_health', 'active_endpoints', 'Active Endpoints', 'absolute')
 
         # --- System Status ---
-        add_chart('system_status', 'System Status', 'status', 'system', f'{self.name}.system_status')
-        if 'system_uptime' in self.data:
-            add_line('system_status', 'system_uptime', 'Uptime (minutes)', 'absolute')
+        add_chart('system_status', 'WAN Status', 'status', 'system', f'{self.name}.system_status')
         if 'wan_ipv4_online' in self.data:
             add_line('system_status', 'wan_ipv4_online', 'IPv4 Online', 'absolute')
         if 'wan_ipv6_online' in self.data:
             add_line('system_status', 'wan_ipv6_online', 'IPv6 Online', 'absolute')
-
+        
+        # --- Uptime Chart (New) ---
+        add_chart('system_uptime', 'System Uptime', 'seconds', 'system', f'{self.name}.system_uptime')
+        if 'system_uptime' in self.data:
+            add_line('system_uptime', 'system_uptime', 'Uptime', 'absolute')
+            
         # --- Signal Quality Charts ---
         add_chart('downstream_power', 'Downstream Power Levels', 'dBmV', 'signal', f'{self.name}.downstream_power')
         add_chart('downstream_snr', 'Downstream SNR', 'dB', 'signal', f'{self.name}.downstream_snr')

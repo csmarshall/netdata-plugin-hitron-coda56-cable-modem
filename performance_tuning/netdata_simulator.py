@@ -2,23 +2,24 @@
 # -*- coding: utf-8 -*-
 
 """
-Enhanced Netdata Modem Simulator with Graphing and Validation.
+Enhanced Netdata Modem Simulator with Per-Endpoint Timing Analysis.
 
 This script simulates the behavior of the hitron_coda.chart.py plugin,
-including the tiered polling logic, and generates comprehensive graphs
-and analysis reports.
+including the tiered polling logic, and generates comprehensive per-endpoint
+timing analysis and graphs.
 
 Key Features:
 - Tiered polling simulation (fast vs slow endpoints) - MATCHES PLUGIN EXACTLY
 - Parallel and serial collection modes - MATCHES PLUGIN EXACTLY  
-- Comprehensive performance metrics with graphing
+- Comprehensive per-endpoint performance metrics with detailed graphing
 - Real-time progress tracking with emojis
 - JSON output for automated analysis
 - Validation against actual plugin behavior
 - Multi-format graph generation (PNG, SVG)
+- Detailed endpoint timing breakdown and analysis
 
-Version: 2.1.0 - Complete working version
-Author: Enhanced for comprehensive analysis and validation
+Version: 2.2.0 - Added comprehensive per-endpoint timing analysis
+Author: Enhanced for per-endpoint analysis and validation
 """
 
 import asyncio
@@ -68,7 +69,8 @@ class NetdataModemSimulator:
     Enhanced simulator for testing Hitron CODA modem tiered polling strategies.
     
     Mirrors the actual plugin's endpoint categorization and polling logic EXACTLY
-    to provide accurate performance predictions and validation.
+    to provide accurate performance predictions and validation with detailed
+    per-endpoint timing analysis.
     """
 
     # --- Endpoint Categories (EXACTLY MATCH PLUGIN FROM hitron_coda.chart.py) ---
@@ -187,6 +189,29 @@ class NetdataModemSimulator:
         for endpoint in self.ALL_ENDPOINTS:
             self.results['endpoint_success_rates'][endpoint] = {'success': 0, 'total': 0}
         
+        # --- Enhanced Per-Endpoint Tracking ---
+        self.endpoint_stats = {}
+        for endpoint in self.ALL_ENDPOINTS:
+            self.endpoint_stats[endpoint] = {
+                'total_requests': 0,
+                'successful_requests': 0,
+                'failed_requests': 0,
+                'timeout_failures': 0,
+                'response_times': [],
+                'errors': [],
+                'attempts_used': [],  # Track how many attempts were needed
+                'status_codes': [],   # Track HTTP status codes
+                'data_sizes': [],     # Track response sizes
+                'time_series': {
+                    'timestamps': [],
+                    'response_times': [],
+                    'success': [],
+                    'attempts': [],
+                    'status_codes': [],
+                    'data_sizes': []
+                }
+            }
+        
         # --- Performance Stats (for health tracking - MATCHES PLUGIN) ---
         self.performance_stats = {
             'total_cycles': 0,
@@ -215,6 +240,7 @@ class NetdataModemSimulator:
         
         logger.info(f"Enhanced Simulator initialized:")
         logger.info(f"  🔍 Plugin validation: Endpoint categories, timeouts, and logic match plugin")
+        logger.info(f"  📊 Per-endpoint timing: Full tracking and analysis enabled")
         logger.info(f"  Collection mode: {'Parallel' if self.parallel_collection else 'Serial'}")
         logger.info(f"  Update interval: {self.update_every}s")
         logger.info(f"  OFDM poll multiple: {self.ofdm_poll_multiple} (every {self.ofdm_poll_multiple * self.update_every}s)")
@@ -223,7 +249,7 @@ class NetdataModemSimulator:
         logger.info(f"  Collection timeout: {self.collection_timeout}s (auto-calc: {self.update_every} * 0.9)")
         logger.info(f"  Max retries: {self.max_retries} (auto-calc: {self.collection_timeout} ÷ {max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout)})")
         logger.info(f"  OFDM cache TTL: {self.ofdm_cache_ttl}s")
-        logger.info(f"  📊 Output directory: {self.output_dir}")
+        logger.info(f"  📁 Output directory: {self.output_dir}")
 
     async def _test_connectivity(self):
         """Test initial connectivity using the correct endpoint names."""
@@ -233,7 +259,7 @@ class NetdataModemSimulator:
             timeout = aiohttp.ClientTimeout(total=10)
             
             headers = {
-                'User-Agent': 'Mozilla/5.0 (compatible; Netdata-Hitron-Plugin/2.1.0)',
+                'User-Agent': 'Mozilla/5.0 (compatible; Netdata-Hitron-Plugin/2.2.0)',
                 'Accept': 'application/json, text/html, */*',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept-Encoding': 'gzip, deflate',
@@ -490,7 +516,7 @@ class NetdataModemSimulator:
         timeout = aiohttp.ClientTimeout(total=self.collection_timeout)
         
         headers = {
-            'User-Agent': 'Netdata-Hitron-Plugin/2.1.0',
+            'User-Agent': 'Netdata-Hitron-Plugin/2.2.0',
             'Accept': 'application/json, */*',
             'Connection': 'close'
         }
@@ -518,7 +544,7 @@ class NetdataModemSimulator:
         timeout = aiohttp.ClientTimeout(total=self.collection_timeout, sock_read=max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout))
         
         headers = {
-            'User-Agent': 'Netdata-Hitron-Plugin/2.1.0',
+            'User-Agent': 'Netdata-Hitron-Plugin/2.2.0',
             'Accept': 'application/json, */*'
         }
         
@@ -527,11 +553,14 @@ class NetdataModemSimulator:
             return await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _fetch_endpoint(self, session, endpoint):
-        """Fetch a single endpoint with enhanced timeout logic (MATCHES PLUGIN)."""
+        """Fetch a single endpoint with enhanced timeout logic and detailed per-endpoint tracking (MATCHES PLUGIN)."""
         url = f"{self.modem_host}/data/{endpoint}"
         endpoint_timeout = self.endpoint_timeouts.get(endpoint, self.fast_endpoint_timeout)
+        stats = self.endpoint_stats[endpoint]
         
         logger.debug(f"Fetching {endpoint} with {endpoint_timeout}s timeout...")
+        
+        cycle_timestamp = datetime.now()
         
         for attempt in range(self.max_retries):
             request_start = time.monotonic()
@@ -541,15 +570,32 @@ class NetdataModemSimulator:
                     response_time = (time.monotonic() - request_start) * 1000  # Convert to ms
                     self.results['response_times'].append(response_time)
                     
-                    logger.debug(f"{endpoint}: HTTP {response.status} in {response_time:.1f}ms")
+                    # Track per-endpoint statistics
+                    stats['response_times'].append(response_time)
+                    stats['attempts_used'].append(attempt + 1)
+                    stats['status_codes'].append(response.status)
+                    
+                    # Update time series for this endpoint
+                    stats['time_series']['timestamps'].append(cycle_timestamp)
+                    stats['time_series']['response_times'].append(response_time)
+                    stats['time_series']['attempts'].append(attempt + 1)
+                    stats['time_series']['status_codes'].append(response.status)
+                    
+                    logger.debug(f"{endpoint}: HTTP {response.status} in {response_time:.1f}ms (attempt {attempt + 1})")
                     
                     if response.status == 200:
                         # Update endpoint success tracking
                         self.results['endpoint_success_rates'][endpoint]['success'] += 1
                         self.results['endpoint_success_rates'][endpoint]['total'] += 1
+                        stats['total_requests'] += 1
+                        stats['successful_requests'] += 1
                         
                         # Get response text first - Hitron modems return text/html even for JSON
                         response_text = await response.text()
+                        data_size = len(response_text)
+                        stats['data_sizes'].append(data_size)
+                        stats['time_series']['data_sizes'].append(data_size)
+                        stats['time_series']['success'].append(1)
                         
                         # Handle different response types like the plugin would
                         if response_text.strip() == "0":
@@ -562,12 +608,30 @@ class NetdataModemSimulator:
                             try:
                                 json_data = await response.json(content_type=None)  # Ignore content-type
                                 logger.debug(f"{endpoint}: Successfully parsed JSON via aiohttp")
-                                return json_data
+                                return {
+                                    'endpoint': endpoint,
+                                    'success': True,
+                                    'response_time': response_time,
+                                    'status_code': response.status,
+                                    'data_size': data_size,
+                                    'attempt': attempt + 1,
+                                    'timestamp': cycle_timestamp,
+                                    'data': json_data
+                                }
                             except Exception:
                                 # If that fails, manually parse the text
                                 json_data = json.loads(response_text)
                                 logger.debug(f"{endpoint}: Successfully parsed JSON via manual parsing")
-                                return json_data
+                                return {
+                                    'endpoint': endpoint,
+                                    'success': True,
+                                    'response_time': response_time,
+                                    'status_code': response.status,
+                                    'data_size': data_size,
+                                    'attempt': attempt + 1,
+                                    'timestamp': cycle_timestamp,
+                                    'data': json_data
+                                }
                         except json.JSONDecodeError as e:
                             logger.warning(f"{endpoint}: JSON parsing failed: {e}")
                             # Log response details for debugging
@@ -580,11 +644,31 @@ class NetdataModemSimulator:
                     else:
                         logger.warning(f"{endpoint}: HTTP {response.status} - {response.reason}")
                         self.results['endpoint_success_rates'][endpoint]['total'] += 1
+                        stats['total_requests'] += 1
+                        stats['failed_requests'] += 1
+                        stats['time_series']['success'].append(0)
+                        stats['time_series']['data_sizes'].append(0)
                         
             except asyncio.TimeoutError as e:
                 response_time = (time.monotonic() - request_start) * 1000
                 self.results['response_times'].append(response_time)
                 self.results['endpoint_success_rates'][endpoint]['total'] += 1
+                
+                # Track timeout in endpoint stats
+                stats['total_requests'] += 1
+                stats['failed_requests'] += 1
+                stats['timeout_failures'] += 1
+                stats['response_times'].append(response_time)
+                stats['attempts_used'].append(attempt + 1)
+                stats['status_codes'].append('TIMEOUT')
+                
+                # Update time series
+                stats['time_series']['timestamps'].append(cycle_timestamp)
+                stats['time_series']['response_times'].append(response_time)
+                stats['time_series']['attempts'].append(attempt + 1)
+                stats['time_series']['status_codes'].append('TIMEOUT')
+                stats['time_series']['success'].append(0)
+                stats['time_series']['data_sizes'].append(0)
                 
                 logger.warning(f"{endpoint}: Timeout after {response_time:.1f}ms (limit: {endpoint_timeout}s)")
                 
@@ -596,6 +680,22 @@ class NetdataModemSimulator:
                 response_time = (time.monotonic() - request_start) * 1000
                 self.results['response_times'].append(response_time)
                 self.results['endpoint_success_rates'][endpoint]['total'] += 1
+                
+                # Track error in endpoint stats
+                stats['total_requests'] += 1
+                stats['failed_requests'] += 1
+                stats['errors'].append(str(e))
+                stats['response_times'].append(response_time)
+                stats['attempts_used'].append(attempt + 1)
+                stats['status_codes'].append('ERROR')
+                
+                # Update time series
+                stats['time_series']['timestamps'].append(cycle_timestamp)
+                stats['time_series']['response_times'].append(response_time)
+                stats['time_series']['attempts'].append(attempt + 1)
+                stats['time_series']['status_codes'].append('ERROR')
+                stats['time_series']['success'].append(0)
+                stats['time_series']['data_sizes'].append(0)
                 
                 logger.warning(f"{endpoint}: Error: {e}")
                 
@@ -771,12 +871,28 @@ class NetdataModemSimulator:
             logger.info("Install with: pip install matplotlib pandas")
             return
             
-        logger.info("📊 Generating performance graphs...")
+        logger.info("📊 Generating comprehensive per-endpoint performance graphs...")
         
         if not self.results['time_series']['timestamps']:
             logger.warning("No time series data available for graphing")
             return
         
+        # Generate main performance overview
+        self._generate_main_performance_graph()
+        
+        # Generate detailed per-endpoint analysis
+        self._generate_endpoint_timing_graphs()
+        
+        # Generate endpoint comparison graphs
+        self._generate_endpoint_comparison_graphs()
+        
+        # Generate timing distribution analysis
+        self._generate_timing_distribution_graphs()
+        
+        logger.info("📊 Graph generation completed")
+
+    def _generate_main_performance_graph(self):
+        """Generate main performance overview graph."""
         # Create DataFrame for easier plotting
         df = pd.DataFrame({
             'timestamp': self.results['time_series']['timestamps'],
@@ -792,7 +908,7 @@ class NetdataModemSimulator:
         # Set timestamp as index
         df.set_index('timestamp', inplace=True)
         
-        # Create a 2x2 grid layout for fast rendering
+        # Create a 2x2 grid layout for main overview
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
         
         # 1. Success Rate Over Time
@@ -874,24 +990,314 @@ Timeouts: {self.fast_endpoint_timeout}s/{self.ofdm_endpoint_timeout}s
         
         # Add overall title
         config_summary = f"Mode: {'Parallel' if self.parallel_collection else 'Serial'} | Interval: {self.update_every}s | OFDM: {self.ofdm_poll_multiple}x"
-        fig.suptitle(f'Hitron CODA Performance Analysis - {config_summary}', fontsize=14, fontweight='bold')
+        fig.suptitle(f'Hitron CODA Performance Overview - {config_summary}', fontsize=14, fontweight='bold')
         
         plt.tight_layout()
         
-        # Save with simplified naming and faster rendering
-        graph_file = self.output_dir / f'{self.file_prefix}_analysis.png'
+        # Save main overview graph
+        graph_file = self.output_dir / f'{self.file_prefix}_overview.png'
         plt.savefig(graph_file, dpi=150, bbox_inches='tight', facecolor='white')
-        logger.info(f"📊 Analysis graph saved: {graph_file}")
+        logger.info(f"📊 Main overview graph saved: {graph_file}")
         
         plt.close()
+
+    def _generate_endpoint_timing_graphs(self):
+        """Generate detailed per-endpoint timing graphs."""
+        # Create a large figure for all endpoint timings
+        n_endpoints = len(self.ALL_ENDPOINTS)
+        n_cols = 2
+        n_rows = (n_endpoints + 1) // 2
         
-        logger.info("📊 Graph generation completed")
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
+        if n_rows == 1:
+            axes = [axes]
+        if n_cols == 1:
+            axes = [[ax] for ax in axes]
+        
+        for i, endpoint in enumerate(self.ALL_ENDPOINTS):
+            row = i // n_cols
+            col = i % n_cols
+            ax = axes[row][col]
+            
+            stats = self.endpoint_stats[endpoint]
+            if not stats['time_series']['timestamps']:
+                ax.text(0.5, 0.5, f'No data for\n{endpoint}', ha='center', va='center', transform=ax.transAxes)
+                ax.set_title(f'{endpoint} - No Data')
+                continue
+            
+            # Create DataFrame for this endpoint
+            endpoint_df = pd.DataFrame({
+                'timestamp': stats['time_series']['timestamps'],
+                'response_time': stats['time_series']['response_times'],
+                'success': stats['time_series']['success'],
+                'attempts': stats['time_series']['attempts'],
+                'data_size': stats['time_series']['data_sizes']
+            })
+            endpoint_df.set_index('timestamp', inplace=True)
+            
+            # Plot response times with success/failure coloring
+            success_mask = endpoint_df['success'] == 1
+            failure_mask = endpoint_df['success'] == 0
+            
+            if success_mask.any():
+                ax.scatter(endpoint_df[success_mask].index, endpoint_df[success_mask]['response_time'], 
+                          c='green', alpha=0.7, s=20, label='Success')
+            if failure_mask.any():
+                ax.scatter(endpoint_df[failure_mask].index, endpoint_df[failure_mask]['response_time'], 
+                          c='red', alpha=0.7, s=20, label='Failure')
+            
+            # Add timeout line
+            timeout = self.endpoint_timeouts[endpoint] * 1000
+            ax.axhline(y=timeout, color='orange', linestyle='--', alpha=0.7, label=f'Timeout ({timeout/1000}s)')
+            
+            # Calculate stats for title
+            if stats['response_times']:
+                avg_time = statistics.mean(stats['response_times'])
+                success_rate = (stats['successful_requests'] / stats['total_requests']) * 100 if stats['total_requests'] > 0 else 0
+                short_name = endpoint.replace('.asp', '')
+                endpoint_type = "FAST" if endpoint in self.FAST_ENDPOINTS else "OFDM"
+                
+                ax.set_title(f'{short_name} ({endpoint_type})\nAvg: {avg_time:.0f}ms, Success: {success_rate:.1f}%')
+            else:
+                ax.set_title(f'{endpoint.replace(".asp", "")} - No Response Times')
+            
+            ax.set_ylabel('Response Time (ms)')
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8)
+            ax.tick_params(axis='x', rotation=45, labelsize=8)
+        
+        # Hide any unused subplots
+        for i in range(n_endpoints, n_rows * n_cols):
+            row = i // n_cols
+            col = i % n_cols
+            axes[row][col].set_visible(False)
+        
+        plt.suptitle('Per-Endpoint Response Time Analysis', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        # Save endpoint timing graph
+        endpoint_file = self.output_dir / f'{self.file_prefix}_endpoint_timings.png'
+        plt.savefig(endpoint_file, dpi=150, bbox_inches='tight', facecolor='white')
+        logger.info(f"📊 Endpoint timing graph saved: {endpoint_file}")
+        
+        plt.close()
+
+    def _generate_endpoint_comparison_graphs(self):
+        """Generate endpoint comparison analysis graphs."""
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # 1. Average Response Time Comparison
+        endpoint_names = []
+        avg_times = []
+        colors = []
+        
+        for endpoint in self.ALL_ENDPOINTS:
+            stats = self.endpoint_stats[endpoint]
+            if stats['response_times']:
+                endpoint_names.append(endpoint.replace('.asp', ''))
+                avg_times.append(statistics.mean(stats['response_times']))
+                colors.append('green' if endpoint in self.FAST_ENDPOINTS else 'blue')
+        
+        if avg_times:
+            bars = ax1.bar(range(len(avg_times)), avg_times, color=colors)
+            ax1.set_xticks(range(len(endpoint_names)))
+            ax1.set_xticklabels(endpoint_names, rotation=45)
+            ax1.set_ylabel('Average Response Time (ms)')
+            ax1.set_title('Average Response Times by Endpoint')
+            ax1.grid(True, alpha=0.3)
+            
+            # Add value labels
+            for i, bar in enumerate(bars):
+                height = bar.get_height()
+                ax1.text(bar.get_x() + bar.get_width()/2., height + max(avg_times) * 0.01,
+                        f'{height:.0f}ms', ha='center', va='bottom', fontsize=9)
+        
+        # 2. Response Time Distribution (Box Plot)
+        response_time_data = []
+        labels = []
+        for endpoint in self.ALL_ENDPOINTS:
+            stats = self.endpoint_stats[endpoint]
+            if stats['response_times'] and len(stats['response_times']) > 1:
+                response_time_data.append(stats['response_times'])
+                labels.append(endpoint.replace('.asp', ''))
+        
+        if response_time_data:
+            bp = ax2.boxplot(response_time_data, labels=labels, patch_artist=True)
+            colors = ['lightgreen' if endpoint in self.FAST_ENDPOINTS else 'lightblue' 
+                     for endpoint in self.ALL_ENDPOINTS if self.endpoint_stats[endpoint]['response_times']]
+            for patch, color in zip(bp['boxes'], colors):
+                patch.set_facecolor(color)
+            ax2.set_ylabel('Response Time (ms)')
+            ax2.set_title('Response Time Distribution by Endpoint')
+            ax2.grid(True, alpha=0.3)
+            plt.setp(ax2.get_xticklabels(), rotation=45)
+        
+        # 3. Request Volume and Success Rate
+        volumes = []
+        success_rates = []
+        endpoint_labels = []
+        
+        for endpoint in self.ALL_ENDPOINTS:
+            stats = self.endpoint_stats[endpoint]
+            if stats['total_requests'] > 0:
+                volumes.append(stats['total_requests'])
+                success_rates.append((stats['successful_requests'] / stats['total_requests']) * 100)
+                endpoint_labels.append(endpoint.replace('.asp', ''))
+        
+        if volumes:
+            ax3_twin = ax3.twinx()
+            
+            bars1 = ax3.bar([x - 0.2 for x in range(len(volumes))], volumes, 0.4, 
+                           color='lightblue', label='Total Requests')
+            bars2 = ax3_twin.bar([x + 0.2 for x in range(len(success_rates))], success_rates, 0.4, 
+                                color='lightgreen', label='Success Rate %')
+            
+            ax3.set_xticks(range(len(endpoint_labels)))
+            ax3.set_xticklabels(endpoint_labels, rotation=45)
+            ax3.set_ylabel('Total Requests', color='blue')
+            ax3_twin.set_ylabel('Success Rate (%)', color='green')
+            ax3.set_title('Request Volume vs Success Rate')
+            ax3.grid(True, alpha=0.3)
+        
+        # 4. Timeout and Error Analysis
+        timeout_counts = []
+        error_counts = []
+        endpoint_labels_errors = []
+        
+        for endpoint in self.ALL_ENDPOINTS:
+            stats = self.endpoint_stats[endpoint]
+            if stats['total_requests'] > 0:
+                timeout_counts.append(stats['timeout_failures'])
+                error_counts.append(len(stats['errors']))
+                endpoint_labels_errors.append(endpoint.replace('.asp', ''))
+        
+        if timeout_counts:
+            x = np.arange(len(endpoint_labels_errors))
+            width = 0.35
+            
+            ax4.bar(x - width/2, timeout_counts, width, label='Timeouts', color='orange')
+            ax4.bar(x + width/2, error_counts, width, label='Errors', color='red')
+            
+            ax4.set_xticks(x)
+            ax4.set_xticklabels(endpoint_labels_errors, rotation=45)
+            ax4.set_ylabel('Count')
+            ax4.set_title('Timeout and Error Counts by Endpoint')
+            ax4.legend()
+            ax4.grid(True, alpha=0.3)
+        
+        plt.suptitle('Endpoint Performance Comparison Analysis', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        # Save comparison graph
+        comparison_file = self.output_dir / f'{self.file_prefix}_endpoint_comparison.png'
+        plt.savefig(comparison_file, dpi=150, bbox_inches='tight', facecolor='white')
+        logger.info(f"📊 Endpoint comparison graph saved: {comparison_file}")
+        
+        plt.close()
+
+    def _generate_timing_distribution_graphs(self):
+        """Generate timing distribution analysis graphs."""
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # 1. Overall Response Time Distribution
+        all_response_times = []
+        for endpoint in self.ALL_ENDPOINTS:
+            stats = self.endpoint_stats[endpoint]
+            all_response_times.extend(stats['response_times'])
+        
+        if all_response_times:
+            ax1.hist(all_response_times, bins=50, alpha=0.7, color='skyblue', edgecolor='black')
+            ax1.axvline(statistics.mean(all_response_times), color='red', linestyle='--', 
+                       label=f'Mean: {statistics.mean(all_response_times):.1f}ms')
+            ax1.axvline(statistics.median(all_response_times), color='green', linestyle='--', 
+                       label=f'Median: {statistics.median(all_response_times):.1f}ms')
+            ax1.set_xlabel('Response Time (ms)')
+            ax1.set_ylabel('Frequency')
+            ax1.set_title('Overall Response Time Distribution')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+        
+        # 2. Fast vs OFDM Response Time Comparison
+        fast_times = []
+        ofdm_times = []
+        
+        for endpoint in self.FAST_ENDPOINTS:
+            fast_times.extend(self.endpoint_stats[endpoint]['response_times'])
+        for endpoint in self.SLOW_ENDPOINTS:
+            ofdm_times.extend(self.endpoint_stats[endpoint]['response_times'])
+        
+        if fast_times and ofdm_times:
+            ax2.hist([fast_times, ofdm_times], bins=30, alpha=0.7, 
+                    label=['Fast Endpoints', 'OFDM Endpoints'], 
+                    color=['green', 'blue'])
+            ax2.set_xlabel('Response Time (ms)')
+            ax2.set_ylabel('Frequency')
+            ax2.set_title('Fast vs OFDM Response Time Distribution')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+        
+        # 3. Response Time vs Data Size
+        response_times = []
+        data_sizes = []
+        colors = []
+        
+        for endpoint in self.ALL_ENDPOINTS:
+            stats = self.endpoint_stats[endpoint]
+            if stats['response_times'] and stats['data_sizes']:
+                for rt, ds in zip(stats['response_times'], stats['data_sizes']):
+                    if ds > 0:  # Only successful requests have data sizes
+                        response_times.append(rt)
+                        data_sizes.append(ds)
+                        colors.append('green' if endpoint in self.FAST_ENDPOINTS else 'blue')
+        
+        if response_times and data_sizes:
+            ax3.scatter(data_sizes, response_times, c=colors, alpha=0.6, s=20)
+            ax3.set_xlabel('Response Data Size (bytes)')
+            ax3.set_ylabel('Response Time (ms)')
+            ax3.set_title('Response Time vs Data Size')
+            ax3.grid(True, alpha=0.3)
+        
+        # 4. Retry Analysis
+        retry_data = {}
+        for endpoint in self.ALL_ENDPOINTS:
+            stats = self.endpoint_stats[endpoint]
+            if stats['attempts_used']:
+                for attempts in stats['attempts_used']:
+                    if attempts not in retry_data:
+                        retry_data[attempts] = 0
+                    retry_data[attempts] += 1
+        
+        if retry_data:
+            attempts = list(retry_data.keys())
+            counts = list(retry_data.values())
+            colors = ['green' if a == 1 else 'orange' if a == 2 else 'red' for a in attempts]
+            
+            bars = ax4.bar(attempts, counts, color=colors)
+            ax4.set_xlabel('Attempts Required')
+            ax4.set_ylabel('Frequency')
+            ax4.set_title('Request Retry Analysis')
+            ax4.grid(True, alpha=0.3)
+            
+            # Add value labels
+            for bar, count in zip(bars, counts):
+                ax4.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(counts) * 0.01,
+                        str(count), ha='center', va='bottom')
+        
+        plt.suptitle('Response Time Distribution Analysis', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        # Save distribution graph
+        distribution_file = self.output_dir / f'{self.file_prefix}_timing_distribution.png'
+        plt.savefig(distribution_file, dpi=150, bbox_inches='tight', facecolor='white')
+        logger.info(f"📊 Timing distribution graph saved: {distribution_file}")
+        
+        plt.close()
 
     def generate_csv_summary(self):
         """Generate CSV summary for automated analysis."""
+        # Main simulation summary
         csv_file = self.output_dir / f'{self.file_prefix}_simulation_summary.csv'
         
-        # Create summary data
         summary_data = []
         for i, timestamp in enumerate(self.results['time_series']['timestamps']):
             summary_data.append({
@@ -907,13 +1313,11 @@ Timeouts: {self.fast_endpoint_timeout}s/{self.ofdm_endpoint_timeout}s
                 'cache_hit': self.results['time_series']['cache_status'][i]
             })
         
-        # Write to CSV
         if summary_data and pd is not None:
             df = pd.DataFrame(summary_data)
             df.to_csv(csv_file, index=False)
             logger.info(f"📊 CSV summary saved: {csv_file}")
         elif summary_data:
-            # Fallback CSV writing without pandas
             import csv
             with open(csv_file, 'w', newline='') as f:
                 if summary_data:
@@ -922,37 +1326,82 @@ Timeouts: {self.fast_endpoint_timeout}s/{self.ofdm_endpoint_timeout}s
                     writer.writerows(summary_data)
             logger.info(f"📊 CSV summary saved: {csv_file}")
         
-        # Also create endpoint-specific CSV
+        # Per-endpoint performance summary
         endpoint_csv = self.output_dir / f'{self.file_prefix}_endpoint_performance.csv'
         endpoint_data = []
-        for endpoint, stats in self.results['endpoint_success_rates'].items():
-            if stats['total'] > 0:
+        for endpoint, stats in self.endpoint_stats.items():
+            if stats['total_requests'] > 0:
+                avg_response_time = statistics.mean(stats['response_times']) if stats['response_times'] else 0
+                min_response_time = min(stats['response_times']) if stats['response_times'] else 0
+                max_response_time = max(stats['response_times']) if stats['response_times'] else 0
+                p95_response_time = np.percentile(stats['response_times'], 95) if len(stats['response_times']) > 1 else avg_response_time
+                avg_attempts = statistics.mean(stats['attempts_used']) if stats['attempts_used'] else 0
+                avg_data_size = statistics.mean([ds for ds in stats['data_sizes'] if ds > 0]) if stats['data_sizes'] else 0
+                
                 endpoint_data.append({
                     'endpoint': endpoint,
                     'type': 'FAST' if endpoint in self.FAST_ENDPOINTS else 'OFDM',
                     'timeout_seconds': self.endpoint_timeouts[endpoint],
-                    'total_requests': stats['total'],
-                    'successful_requests': stats['success'],
-                    'success_rate_percent': (stats['success'] / stats['total']) * 100
+                    'total_requests': stats['total_requests'],
+                    'successful_requests': stats['successful_requests'],
+                    'failed_requests': stats['failed_requests'],
+                    'timeout_failures': stats['timeout_failures'],
+                    'success_rate_percent': (stats['successful_requests'] / stats['total_requests']) * 100,
+                    'avg_response_time_ms': avg_response_time,
+                    'min_response_time_ms': min_response_time,
+                    'max_response_time_ms': max_response_time,
+                    'p95_response_time_ms': p95_response_time,
+                    'avg_attempts': avg_attempts,
+                    'avg_data_size_bytes': avg_data_size,
+                    'unique_errors': len(set(stats['errors'])) if stats['errors'] else 0
                 })
         
         if endpoint_data and pd is not None:
             df_endpoints = pd.DataFrame(endpoint_data)
             df_endpoints.to_csv(endpoint_csv, index=False)
-            logger.info(f"📊 Endpoint CSV saved: {endpoint_csv}")
+            logger.info(f"📊 Endpoint performance CSV saved: {endpoint_csv}")
         elif endpoint_data:
-            # Fallback CSV writing without pandas
             import csv
             with open(endpoint_csv, 'w', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=endpoint_data[0].keys())
                 writer.writeheader()
                 writer.writerows(endpoint_data)
-            logger.info(f"📊 Endpoint CSV saved: {endpoint_csv}")
+            logger.info(f"📊 Endpoint performance CSV saved: {endpoint_csv}")
+        
+        # Detailed per-endpoint time series
+        for endpoint in self.ALL_ENDPOINTS:
+            stats = self.endpoint_stats[endpoint]
+            if stats['time_series']['timestamps']:
+                endpoint_csv_detailed = self.output_dir / f'{self.file_prefix}_{endpoint.replace(".asp", "")}_detailed.csv'
+                
+                detailed_data = []
+                for i, timestamp in enumerate(stats['time_series']['timestamps']):
+                    detailed_data.append({
+                        'timestamp': timestamp,
+                        'response_time_ms': stats['time_series']['response_times'][i],
+                        'success': stats['time_series']['success'][i],
+                        'attempts': stats['time_series']['attempts'][i],
+                        'status_code': stats['time_series']['status_codes'][i],
+                        'data_size_bytes': stats['time_series']['data_sizes'][i]
+                    })
+                
+                if detailed_data and pd is not None:
+                    df_detailed = pd.DataFrame(detailed_data)
+                    df_detailed.to_csv(endpoint_csv_detailed, index=False)
+                elif detailed_data:
+                    import csv
+                    with open(endpoint_csv_detailed, 'w', newline='') as f:
+                        writer = csv.DictWriter(f, fieldnames=detailed_data[0].keys())
+                        writer.writeheader()
+                        writer.writerows(detailed_data)
+                
+                logger.debug(f"📊 Detailed CSV saved for {endpoint}: {endpoint_csv_detailed}")
 
     def generate_report(self):
-        """Generate comprehensive final report with plugin validation."""
+        """Generate comprehensive final report with plugin validation and per-endpoint analysis."""
         print("\n\n" + "="*80)
         print("           ENHANCED SIMULATION FINAL REPORT")
+        print("           📊 PER-ENDPOINT TIMING ANALYSIS")
         print("="*80)
         
         if self.results['total_cycles'] == 0:
@@ -974,6 +1423,7 @@ Timeouts: {self.fast_endpoint_timeout}s/{self.ofdm_endpoint_timeout}s
         print(f"  ✅ Collection logic: Serial/parallel modes match plugin")
         print(f"  ✅ Cache simulation: OFDM caching logic matches plugin")
         print(f"  ✅ Retry logic: Auto-calculation matches plugin formula")
+        print(f"  ✅ Per-endpoint tracking: Enhanced timing analysis added")
         
         # Test configuration
         print(f"\nConfiguration:")
@@ -1018,14 +1468,57 @@ Timeouts: {self.fast_endpoint_timeout}s/{self.ofdm_endpoint_timeout}s
             cache_hit_rate = (self.results['cache_hits'] / cache_total) * 100
             print(f"  Cache Hit Rate:        {cache_hit_rate:.1f}%")
         
-        print(f"\nEndpoint Analysis:")
+        print(f"\n📊 DETAILED PER-ENDPOINT ANALYSIS:")
+        print(f"  {'Endpoint':<20} {'Type':<4} {'Reqs':<6} {'Success':<7} {'Avg(ms)':<8} {'Min(ms)':<8} {'Max(ms)':<8} {'P95(ms)':<8} {'Timeouts':<8} {'Retries':<7}")
+        print(f"  {'-'*20} {'-'*4} {'-'*6} {'-'*7} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*7}")
+        
         for endpoint in self.ALL_ENDPOINTS:
-            stats = self.results['endpoint_success_rates'][endpoint]
-            if stats['total'] > 0:
-                success_rate = (stats['success'] / stats['total']) * 100
+            stats = self.endpoint_stats[endpoint]
+            if stats['total_requests'] > 0:
+                success_rate = (stats['successful_requests'] / stats['total_requests']) * 100
                 endpoint_type = "FAST" if endpoint in self.FAST_ENDPOINTS else "OFDM"
                 timeout = self.endpoint_timeouts[endpoint]
-                print(f"  {endpoint:20} ({endpoint_type}): {success_rate:5.1f}% ({stats['success']}/{stats['total']}) [{timeout}s timeout]")
+                
+                if stats['response_times']:
+                    avg_time = statistics.mean(stats['response_times'])
+                    min_time = min(stats['response_times'])
+                    max_time = max(stats['response_times'])
+                    p95_time = np.percentile(stats['response_times'], 95) if len(stats['response_times']) > 1 else avg_time
+                else:
+                    avg_time = min_time = max_time = p95_time = 0
+                
+                avg_attempts = statistics.mean(stats['attempts_used']) if stats['attempts_used'] else 0
+                
+                short_name = endpoint.replace('.asp', '')
+                print(f"  {short_name:<20} {endpoint_type:<4} {stats['total_requests']:<6} {success_rate:<7.1f} {avg_time:<8.0f} {min_time:<8.0f} {max_time:<8.0f} {p95_time:<8.0f} {stats['timeout_failures']:<8} {avg_attempts:<7.1f}")
+        
+        # Endpoint ranking by performance
+        print(f"\n🏆 ENDPOINT PERFORMANCE RANKING (by avg response time):")
+        endpoint_performance = []
+        for endpoint, stats in self.endpoint_stats.items():
+            if stats['response_times']:
+                avg_time_ms = statistics.mean(stats['response_times'])
+                success_rate = (stats['successful_requests'] / stats['total_requests']) * 100
+                endpoint_performance.append((endpoint, avg_time_ms, success_rate))
+        
+        # Sort by average response time (fastest first)
+        endpoint_performance.sort(key=lambda x: x[1])
+        
+        if endpoint_performance:
+            print(f"  {'Rank':<4} {'Endpoint':<20} {'Avg Time (ms)':<15} {'Success Rate':<12} {'Assessment'}")
+            print(f"  {'-'*4} {'-'*20} {'-'*15} {'-'*12} {'-'*20}")
+            for i, (endpoint, avg_time, success_rate) in enumerate(endpoint_performance, 1):
+                endpoint_short = endpoint.replace('.asp', '')
+                if avg_time < 100 and success_rate >= 95:
+                    assessment = "🟢 Excellent"
+                elif avg_time < 500 and success_rate >= 90:
+                    assessment = "🟡 Good"
+                elif avg_time < 1000 and success_rate >= 80:
+                    assessment = "🟠 Fair"
+                else:
+                    assessment = "🔴 Poor"
+                
+                print(f"  {i:<4} {endpoint_short:<20} {avg_time:<15.0f} {success_rate:<12.1f} {assessment}")
         
         # Performance Assessment with emojis
         print(f"\nAssessment:")
@@ -1052,16 +1545,41 @@ Timeouts: {self.fast_endpoint_timeout}s/{self.ofdm_endpoint_timeout}s
         if self.results['max_consecutive_failures'] > 5:
             print(f"  ⚠️  Warning: High consecutive failure count ({self.results['max_consecutive_failures']})")
         
+        # Per-endpoint recommendations
+        print(f"\n💡 PER-ENDPOINT OPTIMIZATION SUGGESTIONS:")
+        for endpoint, stats in self.endpoint_stats.items():
+            if stats['total_requests'] > 0:
+                success_rate = (stats['successful_requests'] / stats['total_requests']) * 100
+                avg_time = statistics.mean(stats['response_times']) if stats['response_times'] else 0
+                timeout = self.endpoint_timeouts[endpoint] * 1000
+                
+                if success_rate < 90:
+                    print(f"  🔴 {endpoint}: Low success rate ({success_rate:.1f}%) - consider increasing timeout or reducing load")
+                elif avg_time > timeout * 0.8:
+                    print(f"  🟠 {endpoint}: High response time ({avg_time:.0f}ms) near timeout ({timeout:.0f}ms)")
+                elif stats['timeout_failures'] > stats['total_requests'] * 0.1:
+                    print(f"  🟡 {endpoint}: High timeout rate ({stats['timeout_failures']}/{stats['total_requests']}) - increase timeout")
+                else:
+                    print(f"  🟢 {endpoint}: Performance looks good")
+        
         # Optimization suggestions
         if utilization < 30 and cycle_success_rate > 95:
             suggested_interval = max(4, int(avg_collection_time / 1000 * 2.5))
-            print(f"  💡 Optimization: Could reduce update_every to {suggested_interval}s for {self.update_every/suggested_interval:.1f}x faster polling")
+            print(f"\n💡 System Optimization: Could reduce update_every to {suggested_interval}s for {self.update_every/suggested_interval:.1f}x faster polling")
         
         if collection_efficiency > 80:
             suggested_timeout = int(max_collection_time / 1000 * 1.3)
-            print(f"  💡 Optimization: Consider increasing collection_timeout to {suggested_timeout}s")
+            print(f"💡 Timeout Optimization: Consider increasing collection_timeout to {suggested_timeout}s")
         
         print(f"\n📊 Graphs and CSVs saved to: {self.output_dir}")
+        print(f"📁 Generated files:")
+        print(f"  - {self.file_prefix}_overview.png (main performance overview)")
+        print(f"  - {self.file_prefix}_endpoint_timings.png (per-endpoint timing analysis)")
+        print(f"  - {self.file_prefix}_endpoint_comparison.png (endpoint comparison)")
+        print(f"  - {self.file_prefix}_timing_distribution.png (timing distribution analysis)")
+        print(f"  - {self.file_prefix}_simulation_summary.csv (cycle-by-cycle data)")
+        print(f"  - {self.file_prefix}_endpoint_performance.csv (endpoint summary)")
+        print(f"  - {self.file_prefix}_[endpoint]_detailed.csv (per-endpoint detailed data)")
         print("="*80)
         
         # Create machine-readable report for automated analysis
@@ -1072,7 +1590,8 @@ Timeouts: {self.fast_endpoint_timeout}s/{self.ofdm_endpoint_timeout}s
                 "timeout_configuration_match": True,
                 "collection_logic_match": True,
                 "cache_simulation_match": True,
-                "retry_logic_match": True
+                "retry_logic_match": True,
+                "per_endpoint_tracking": True
             },
             "cycle_success_rate": cycle_success_rate,
             "request_success_rate": request_success_rate,
@@ -1089,6 +1608,7 @@ Timeouts: {self.fast_endpoint_timeout}s/{self.ofdm_endpoint_timeout}s
             "cache_hits": self.results['cache_hits'],
             "cache_misses": self.results['cache_misses'],
             "endpoint_success_rates": self.results['endpoint_success_rates'],
+            "endpoint_detailed_stats": {},
             "assessment": assessment.split()[0],  # Remove emoji for JSON
             "utilization_percent": utilization,
             "collection_efficiency_percent": collection_efficiency,
@@ -1103,6 +1623,20 @@ Timeouts: {self.fast_endpoint_timeout}s/{self.ofdm_endpoint_timeout}s
             },
             "output_directory": str(self.output_dir)
         }
+        
+        # Add detailed endpoint stats to report
+        for endpoint, stats in self.endpoint_stats.items():
+            if stats['total_requests'] > 0:
+                report["endpoint_detailed_stats"][endpoint] = {
+                    "total_requests": stats['total_requests'],
+                    "successful_requests": stats['successful_requests'],
+                    "success_rate": (stats['successful_requests'] / stats['total_requests']) * 100,
+                    "avg_response_time_ms": statistics.mean(stats['response_times']) if stats['response_times'] else 0,
+                    "min_response_time_ms": min(stats['response_times']) if stats['response_times'] else 0,
+                    "max_response_time_ms": max(stats['response_times']) if stats['response_times'] else 0,
+                    "timeout_failures": stats['timeout_failures'],
+                    "avg_attempts": statistics.mean(stats['attempts_used']) if stats['attempts_used'] else 0
+                }
         
         # Output JSON for automated processing
         print(json.dumps(report))
@@ -1134,17 +1668,17 @@ def signal_handler(simulator):
 def main():
     """Main entry point with comprehensive argument parsing."""
     parser = argparse.ArgumentParser(
-        description="Enhanced Netdata Hitron CODA Modem Stability Simulator with Graphing",
+        description="Enhanced Netdata Hitron CODA Modem Stability Simulator with Per-Endpoint Timing Analysis",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Test default tiered polling with graphs
+  # Test default tiered polling with comprehensive per-endpoint analysis
   %(prog)s --host https://192.168.100.1 --duration 300
   
-  # Test aggressive settings with full analysis
+  # Test aggressive settings with full per-endpoint timing analysis
   %(prog)s --update-every 30 --ofdm-poll-multiple 10 --parallel --duration 600 --output-dir ./test_results
   
-  # Test ultra-conservative settings  
+  # Test ultra-conservative settings with detailed endpoint tracking
   %(prog)s --update-every 120 --ofdm-poll-multiple 5 --serial --inter-request-delay 2 --duration 1800
         """
     )
@@ -1207,7 +1741,7 @@ Examples:
     # Validate matplotlib availability for graphing
     if not args.no_graphs and not GRAPHING_AVAILABLE:
         logger.warning("Graphing libraries not available")
-        logger.info("Install with: pip install matplotlib pandas")
+        logger.info("Install with: pip install matplotlib pandas numpy")
         logger.info("Continuing without graphs...")
     
     # Build simulator configuration
@@ -1279,7 +1813,8 @@ Examples:
                     "total_cycles": simulator.results.get('total_cycles', 0),
                     "assessment": "INTERRUPTED",
                     "plugin_validation": {
-                        "endpoint_categories_match": True
+                        "endpoint_categories_match": True,
+                        "per_endpoint_tracking": True
                     }
                 }
                 print(json.dumps(basic_report))

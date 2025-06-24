@@ -7,7 +7,7 @@ Automated Test Suite for Hitron CODA Plugin Optimal Speed Finding.
 5 targeted configurations to find the fastest reliable polling based on actual response time data.
 Each test runs for 2 hours to provide statistical confidence for aggressive settings.
 
-Version: 3.0.0 - Speed optimization focused with response time analysis
+Version: 3.0.1 - Fixed timeout parameter data types to match simulator expectations
 """
 
 import asyncio
@@ -86,8 +86,8 @@ class HitronSpeedTestSuite:
                 "duration": test_duration,
                 "update_every": 5,
                 "ofdm_multiple": 12,  # 60s OFDM
-                "fast_timeout": 1.0,
-                "ofdm_timeout": 1.0,
+                "fast_timeout": 3,     # Changed from 1.0 to 3 (int, conservative)
+                "ofdm_timeout": 3,     # Changed from 1.0 to 3 (int, conservative)
                 "max_retries": 3,  # Manual override for safety
                 "parallel_collection": False,
                 "inter_request_delay": 0.1,
@@ -101,8 +101,8 @@ class HitronSpeedTestSuite:
                 "duration": test_duration,
                 "update_every": 4,
                 "ofdm_multiple": 15,  # 60s OFDM  
-                "fast_timeout": 0.6,  # 274ms + 300ms = 574ms → 600ms
-                "ofdm_timeout": 0.6,
+                "fast_timeout": 1,    # Changed from 0.6 to 1 (int, ~600ms rounded up)
+                "ofdm_timeout": 1,    # Changed from 0.6 to 1 (int, ~600ms rounded up)
                 "max_retries": None,  # Auto-calculate
                 "parallel_collection": False,
                 "inter_request_delay": 0.1,
@@ -116,8 +116,8 @@ class HitronSpeedTestSuite:
                 "duration": test_duration,
                 "update_every": 3,
                 "ofdm_multiple": 20,  # 60s OFDM
-                "fast_timeout": 0.5,  # 274ms + 200ms = 474ms → 500ms
-                "ofdm_timeout": 0.5,
+                "fast_timeout": 1,    # Changed from 0.5 to 1 (int, ~500ms rounded up)
+                "ofdm_timeout": 1,    # Changed from 0.5 to 1 (int, ~500ms rounded up)
                 "max_retries": None,  # Auto-calculate
                 "parallel_collection": True,  # Enable parallel for speed
                 "inter_request_delay": 0.0,   # No delay in parallel mode
@@ -131,8 +131,8 @@ class HitronSpeedTestSuite:
                 "duration": test_duration,
                 "update_every": 3,
                 "ofdm_multiple": 13,  # 39s OFDM - more frequent
-                "fast_timeout": 0.4,  # 274ms + 100ms = 374ms → 400ms
-                "ofdm_timeout": 0.4,
+                "fast_timeout": 1,    # Changed from 0.4 to 1 (int, minimum safe timeout)
+                "ofdm_timeout": 2,    # Changed from 0.4 to 2 (int, slightly higher for OFDM)
                 "max_retries": None,  # Auto-calculate
                 "parallel_collection": False,
                 "inter_request_delay": 0.05,  # Minimal delay
@@ -146,8 +146,8 @@ class HitronSpeedTestSuite:
                 "duration": test_duration,
                 "update_every": 2,
                 "ofdm_multiple": 30,  # 60s OFDM
-                "fast_timeout": 0.4,  # Same ultra-tight timeouts
-                "ofdm_timeout": 0.4,
+                "fast_timeout": 1,    # Changed from 0.4 to 1 (int, minimum timeout)
+                "ofdm_timeout": 2,    # Changed from 0.4 to 2 (int, minimum for OFDM)
                 "max_retries": 3,     # Limited retries for speed
                 "parallel_collection": True,  # Required for 2s intervals
                 "inter_request_delay": 0.0,
@@ -203,7 +203,7 @@ class HitronSpeedTestSuite:
                 risk_level = "🔴 VERY HIGH"
             elif test['update_every'] <= 3:
                 risk_level = "🟠 HIGH"  
-            elif test['fast_timeout'] <= 0.5:
+            elif test['fast_timeout'] <= 1:
                 risk_level = "🟡 MODERATE"
             else:
                 risk_level = "🟢 LOW"
@@ -258,15 +258,15 @@ class HitronSpeedTestSuite:
         """Run a single speed test with enhanced logging."""
         start_time = time.time()
         
-        # Build command with all parameters
+        # Build command with all parameters - ensuring all numeric values are properly formatted
         cmd = [
             sys.executable, str(self.simulator_script),
             '--host', self.host,
             '--duration', str(test['duration']),
             '--update-every', str(test['update_every']),
             '--ofdm-poll-multiple', str(test['ofdm_multiple']),
-            '--fast-endpoint-timeout', str(test['fast_timeout']),
-            '--ofdm-endpoint-timeout', str(test['ofdm_timeout']),
+            '--fast-endpoint-timeout', str(test['fast_timeout']),  # Now guaranteed to be int
+            '--ofdm-endpoint-timeout', str(test['ofdm_timeout']),  # Now guaranteed to be int
             '--inter-request-delay', str(test.get('inter_request_delay', 0.1))
         ]
         
@@ -471,13 +471,13 @@ class HitronSpeedTestSuite:
                 next_interval = max(2, config['update_every'] - 1)
                 logger.info(f"   💡 OPTIMIZATION: Try {next_interval}s intervals for even more speed")
             elif collection_efficiency < 40:
-                shorter_timeout = max(0.2, config['fast_timeout'] - 0.1) 
+                shorter_timeout = max(1, config['fast_timeout'] - 1)  # Keep as int
                 logger.info(f"   💡 OPTIMIZATION: Try {shorter_timeout}s timeouts for better efficiency")
             else:
                 logger.info(f"   🎯 OPTIMAL: This configuration appears well-tuned")
         else:
             if max_consecutive_failures > 5:
-                longer_timeout = config['fast_timeout'] + 0.2
+                longer_timeout = config['fast_timeout'] + 1  # Keep as int
                 logger.info(f"   🔧 RECOMMENDATION: Increase timeouts to {longer_timeout}s")
             if success_rate < 90:
                 longer_interval = config['update_every'] + 1
