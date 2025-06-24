@@ -6,13 +6,14 @@ Enhanced Netdata plugin for monitoring Hitron CODA cable modems.
 
 Key Features:
 - Tiered Polling: Fast endpoints polled frequently, OFDM endpoints less often for stability
+- Millisecond Timeout Precision: Sub-second timeout control (0.25 = 250ms)
 - Serial collection by default for maximum modem compatibility
 - Smart timeout management with dynamic retry calculation
 - Comprehensive monitoring of 50+ metrics across 15 charts
 - Built-in health monitoring and performance tracking
 
-Version: 2.0.1 - Corrected system info endpoint from getViewInfo to getSysInfo.
-Author: Enhanced for production stability and performance
+Version: 2.1.0 - Added millisecond timeout precision support
+Author: Enhanced for production stability and sub-second timeout control
 """
 
 import sys
@@ -27,6 +28,7 @@ import logging
 import re
 from datetime import datetime
 from bases.FrameworkServices.SimpleService import SimpleService
+from typing import Union
 
 # --- Configuration Constants ---
 NAME = 'hitron_coda'
@@ -45,9 +47,70 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def parse_timeout_value(value: Union[str, int, float], param_name: str = 'timeout') -> float:
+    """
+    Parse timeout value with support for millisecond precision.
+    
+    Supports formats:
+    - Integer seconds: 3 -> 3.0s
+    - Float seconds: 0.25 -> 0.25s (250ms), 2.5 -> 2.5s (2500ms)  
+    - Millisecond strings: "1500ms" -> 1.5s
+    - Second strings: "3s", "2.5s", "0.25s" -> respective seconds
+    
+    Args:
+        value: Timeout value in various formats
+        param_name: Parameter name for logging
+        
+    Returns:
+        Timeout in seconds (float for sub-second precision)
+    """
+    if isinstance(value, str):
+        value = value.strip().lower()
+        
+        if value.endswith('ms'):
+            # Millisecond format: "1500ms" or "250ms"
+            try:
+                ms_value = float(value[:-2])
+                if ms_value < 50:
+                    logger.warning(f"[{param_name}] Very low timeout {ms_value}ms may cause failures")
+                elif ms_value > 60000:
+                    logger.warning(f"[{param_name}] Very high timeout {ms_value}ms may block collection")
+                return ms_value / 1000.0
+            except ValueError:
+                logger.error(f"[{param_name}] Invalid millisecond format: {value}")
+                raise ValueError(f"Invalid millisecond timeout format: {value}")
+                
+        elif value.endswith('s'):
+            # Second format: "3s" or "2.5s" or "0.25s"
+            try:
+                sec_value = float(value[:-1])
+                return sec_value
+            except ValueError:
+                logger.error(f"[{param_name}] Invalid second format: {value}")
+                raise ValueError(f"Invalid second timeout format: {value}")
+                
+        else:
+            # Try to parse as numeric string - always treat as seconds
+            try:
+                num_value = float(value)
+                logger.debug(f"[{param_name}] Interpreting '{value}' as {num_value} seconds")
+                return num_value
+            except ValueError:
+                logger.error(f"[{param_name}] Could not parse timeout value: {value}")
+                raise ValueError(f"Invalid timeout format: {value}")
+                
+    elif isinstance(value, (int, float)):
+        # Numeric value - always treat as seconds for consistency
+        logger.debug(f"[{param_name}] Treating {value} as seconds")
+        return float(value)
+    else:
+        raise ValueError(f"Unsupported timeout type: {type(value)}")
+
+
 class Service(SimpleService):
     """
-    Enhanced Netdata service for Hitron CODA modems with intelligent tiered polling.
+    Enhanced Netdata service for Hitron CODA modems with intelligent tiered polling
+    and millisecond timeout precision.
     
     Implements a two-tier polling strategy:
     - Fast endpoints: Critical data polled every cycle
@@ -59,7 +122,7 @@ class Service(SimpleService):
         'dsinfo.asp',         # Downstream QAM channels (31 channels)
         'usinfo.asp',         # Upstream QAM channels (5 channels)
         'getCmDocsisWan.asp', # WAN status information
-        'getSysInfo.asp'      # System uptime and status (Corrected Endpoint)
+        'getSysInfo.asp'      # System uptime and status
     ]
     
     SLOW_ENDPOINTS = [
@@ -106,7 +169,7 @@ class Service(SimpleService):
         logger.info(f"[{self.name}] Tiered polling: Fast every {self.update_every}s, OFDM every {self.ofdm_poll_multiple * self.update_every}s")
 
     def _load_configuration(self):
-        """Load and process configuration with smart defaults."""
+        """Load and process configuration with enhanced millisecond timeout support."""
         if self.configuration is None:
             self.configuration = {}
         if NAME in self.configuration:
@@ -126,37 +189,59 @@ class Service(SimpleService):
         self.parallel_collection = self.configuration.get('parallel_collection', False)
         self.inter_request_delay = float(self.configuration.get('inter_request_delay', 0.2))
         
-        # --- Enhanced Two-Tier Timeout Configuration ---
-        self.fast_endpoint_timeout = int(self.configuration.get('fast_endpoint_timeout', 3))
-        self.ofdm_endpoint_timeout = int(self.configuration.get('ofdm_endpoint_timeout', 8))
+        # --- Enhanced Timeout Configuration with Millisecond Support ---
         
-        # Endpoint timeout mapping
+        # Fast endpoint timeout (critical endpoints like QAM channels, WAN status)
+        fast_timeout_config = self.configuration.get('fast_endpoint_timeout', 3)
+        self.fast_endpoint_timeout = parse_timeout_value(fast_timeout_config, 'fast_endpoint_timeout')
+        
+        # OFDM endpoint timeout (DOCSIS 3.1 endpoints that can cause instability)
+        ofdm_timeout_config = self.configuration.get('ofdm_endpoint_timeout', 8)
+        self.ofdm_endpoint_timeout = parse_timeout_value(ofdm_timeout_config, 'ofdm_endpoint_timeout')
+        
+        # Legacy timeout support (sets both fast and OFDM to same value)
+        if 'endpoint_timeout' in self.configuration:
+            legacy_timeout = self.configuration.get('endpoint_timeout')
+            legacy_timeout_seconds = parse_timeout_value(legacy_timeout, 'endpoint_timeout (legacy)')
+            logger.info(f"[{self.name}] Using legacy endpoint_timeout for both fast and OFDM endpoints")
+            self.fast_endpoint_timeout = legacy_timeout_seconds
+            self.ofdm_endpoint_timeout = legacy_timeout_seconds
+        
+        # --- Create Endpoint Timeout Mapping ---
         self.endpoint_timeouts = {}
         for endpoint in self.FAST_ENDPOINTS:
             self.endpoint_timeouts[endpoint] = self.fast_endpoint_timeout
         for endpoint in self.SLOW_ENDPOINTS:
             self.endpoint_timeouts[endpoint] = self.ofdm_endpoint_timeout
         
-        # --- OFDM Data Caching ---
-        self.ofdm_cache = {}  # Cache for OFDM endpoint data
-        self.ofdm_cache_timestamp = 0
-        self.ofdm_cache_ttl = self.ofdm_poll_multiple * self.update_every  # Cache TTL in seconds
+        # --- Collection Timeout (Enhanced) ---
+        collection_timeout_config = self.configuration.get('collection_timeout')
+        if collection_timeout_config is not None:
+            self.collection_timeout = parse_timeout_value(collection_timeout_config, 'collection_timeout')
+        else:
+            # Auto-calculate as 90% of update_every (PLUGIN DEFAULT)
+            self.collection_timeout = int(self.update_every * 0.9)
         
-        logger.info(f"[{self.name}] Two-tier timeout configuration:")
-        logger.info(f"[{self.name}]   Fast endpoints: {self.fast_endpoint_timeout}s timeout")
-        logger.info(f"[{self.name}]   OFDM endpoints: {self.ofdm_endpoint_timeout}s timeout")
-        logger.info(f"[{self.name}] OFDM caching enabled: TTL={self.ofdm_cache_ttl}s")
-        self.collection_timeout = int(self.configuration.get('collection_timeout', 
-                                                           int(self.update_every * 0.9)))
-        
-        # --- Auto-calculate Max Retries ---
+        # --- Enhanced Auto-calculated Max Retries ---
         self.max_retries = self.configuration.get('max_retries')
         if self.max_retries is None:
-            # Use the longer of the two timeouts for retry calculation
+            # Use the longer of the two timeouts for retry calculation (PLUGIN LOGIC)
             longer_timeout = max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout)
             self.max_retries = max(1, int(self.collection_timeout / longer_timeout))
         else:
             self.max_retries = int(self.max_retries)
+        
+        # --- OFDM Caching Configuration ---
+        self.ofdm_cache = {}
+        self.ofdm_cache_timestamp = 0
+        
+        # --- Enhanced Logging with Millisecond Precision ---
+        logger.info(f"[{self.name}] Enhanced timeout configuration loaded:")
+        logger.info(f"[{self.name}]   Fast endpoints: {self.fast_endpoint_timeout:.3f}s ({self.fast_endpoint_timeout * 1000:.0f}ms)")
+        logger.info(f"[{self.name}]   OFDM endpoints: {self.ofdm_endpoint_timeout:.3f}s ({self.ofdm_endpoint_timeout * 1000:.0f}ms)")
+        logger.info(f"[{self.name}]   Collection timeout: {self.collection_timeout:.3f}s ({self.collection_timeout * 1000:.0f}ms)")
+        longer_timeout = max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout)
+        logger.info(f"[{self.name}]   Max retries: {self.max_retries} (auto-calc: {self.collection_timeout:.3f} ÷ {longer_timeout:.3f})")
 
     def _setup_tiered_polling(self):
         """Configure the tiered polling system."""
@@ -173,17 +258,20 @@ class Service(SimpleService):
                 self.ofdm_poll_multiple = max(1, round(ofdm_update_every / self.update_every))
                 logger.info(f"[{self.name}] Calculated OFDM poll multiple: {self.ofdm_poll_multiple} (every {ofdm_update_every}s)")
         
+        # OFDM cache TTL
+        self.ofdm_cache_ttl = self.ofdm_poll_multiple * self.update_every
+        
         logger.info(f"[{self.name}] Tiered polling enabled:")
         logger.info(f"[{self.name}]   Fast endpoints ({len(self.FAST_ENDPOINTS)}): Every {self.update_every}s")
         logger.info(f"[{self.name}]   Slow endpoints ({len(self.SLOW_ENDPOINTS)}): Every {self.ofdm_poll_multiple * self.update_every}s")
 
     def _validate_configuration(self):
-        """Validate configuration parameters and warn about potential issues."""
+        """Validate configuration parameters with millisecond timeout awareness."""
         # --- Timeout Validation ---
         if self.collection_timeout >= self.update_every:
-            logger.warning(f"[{self.name}] collection_timeout ({self.collection_timeout}s) should be less than update_every ({self.update_every}s)")
+            logger.warning(f"[{self.name}] collection_timeout ({self.collection_timeout:.3f}s) should be less than update_every ({self.update_every}s)")
         
-        # --- Serial Mode Timing Check ---
+        # --- Serial Mode Timing Check with Millisecond Precision ---
         if not self.parallel_collection:
             # Calculate worst-case timing for fast endpoints (always polled)
             fast_time = len(self.FAST_ENDPOINTS) * (self.fast_endpoint_timeout + self.inter_request_delay)
@@ -193,21 +281,32 @@ class Service(SimpleService):
                         len(self.SLOW_ENDPOINTS) * (self.ofdm_endpoint_timeout + self.inter_request_delay))
             
             if fast_time > self.collection_timeout:
-                logger.warning(f"[{self.name}] Fast cycle timing ({fast_time:.1f}s) exceeds collection_timeout ({self.collection_timeout}s)")
+                logger.warning(f"[{self.name}] Fast cycle timing ({fast_time:.3f}s) exceeds collection_timeout ({self.collection_timeout:.3f}s)")
             
             if full_time > self.collection_timeout:
-                logger.warning(f"[{self.name}] Full cycle timing ({full_time:.1f}s) exceeds collection_timeout ({self.collection_timeout}s)")
+                logger.warning(f"[{self.name}] Full cycle timing ({full_time:.3f}s) exceeds collection_timeout ({self.collection_timeout:.3f}s)")
                 logger.warning(f"[{self.name}] Consider increasing collection_timeout or enabling parallel_collection")
         
-        # --- Performance Estimates ---
+        # --- Performance Estimates with Millisecond Precision ---
         if self.parallel_collection:
-            logger.info(f"[{self.name}] Estimated fast cycle time: {self.fast_endpoint_timeout}s (parallel)")
-            logger.info(f"[{self.name}] Estimated full cycle time: {max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout)}s (parallel)")
+            logger.info(f"[{self.name}] Estimated fast cycle time: {self.fast_endpoint_timeout * 1000:.0f}ms (parallel)")
+            logger.info(f"[{self.name}] Estimated full cycle time: {max(self.fast_endpoint_timeout, self.ofdm_endpoint_timeout) * 1000:.0f}ms (parallel)")
         else:
             fast_time = len(self.FAST_ENDPOINTS) * (self.fast_endpoint_timeout + self.inter_request_delay)
             full_time = fast_time + len(self.SLOW_ENDPOINTS) * (self.ofdm_endpoint_timeout + self.inter_request_delay)
-            logger.info(f"[{self.name}] Estimated fast cycle time: {fast_time:.1f}s (serial)")
-            logger.info(f"[{self.name}] Estimated full cycle time: {full_time:.1f}s (serial)")
+            logger.info(f"[{self.name}] Estimated fast cycle time: {fast_time * 1000:.0f}ms (serial)")
+            logger.info(f"[{self.name}] Estimated full cycle time: {full_time * 1000:.0f}ms (serial)")
+        
+        # --- Timeout Optimization Suggestions ---
+        if self.fast_endpoint_timeout < 0.5:
+            logger.info(f"[{self.name}] 🚀 Aggressive fast timeout ({self.fast_endpoint_timeout * 1000:.0f}ms) - excellent for low-latency endpoints")
+        elif self.fast_endpoint_timeout > 5.0:
+            logger.warning(f"[{self.name}] ⚠️ Conservative fast timeout ({self.fast_endpoint_timeout * 1000:.0f}ms) - may impact responsiveness")
+        
+        if self.ofdm_endpoint_timeout < 2.0:
+            logger.warning(f"[{self.name}] ⚠️ Aggressive OFDM timeout ({self.ofdm_endpoint_timeout * 1000:.0f}ms) - may cause failures on unstable endpoints")
+        elif self.ofdm_endpoint_timeout > 15.0:
+            logger.warning(f"[{self.name}] ⚠️ Very conservative OFDM timeout ({self.ofdm_endpoint_timeout * 1000:.0f}ms) - may block collection cycles")
 
     def check(self):
         """Verify connectivity to the modem before starting."""
@@ -366,7 +465,7 @@ class Service(SimpleService):
         with requests.Session() as session:
             session.verify = False
             session.headers.update({
-                'User-Agent': 'Netdata-Hitron-Plugin/2.0.1',
+                'User-Agent': 'Netdata-Hitron-Plugin/2.1.0',
                 'Accept': 'application/json, */*',
                 'Connection': 'close'
             })
@@ -411,7 +510,7 @@ class Service(SimpleService):
         async with aiohttp.ClientSession(
             connector=connector, 
             headers={
-                'User-Agent': 'Netdata-Hitron-Plugin/2.0.1',
+                'User-Agent': 'Netdata-Hitron-Plugin/2.1.0',
                 'Accept': 'application/json, */*'
             }
         ) as session:
@@ -431,15 +530,15 @@ class Service(SimpleService):
     async def _fetch_endpoint_async(self, session, endpoint):
         """Async helper to fetch a single endpoint with retries and per-endpoint timeouts."""
         url = f"{self.host}/data/{endpoint}"
-        endpoint_timeout = self.endpoint_timeouts.get(endpoint, 5) # Default 5s
+        endpoint_timeout = self.endpoint_timeouts.get(endpoint, self.fast_endpoint_timeout)
         
         for attempt in range(self.max_retries):
             try:
-                # Use an individual timeout for each request attempt
+                # Use precise timeout (aiohttp supports float precision)
                 timeout = aiohttp.ClientTimeout(total=endpoint_timeout)
                 async with session.get(url, timeout=timeout) as response:
                     response.raise_for_status()
-                    logger.debug(f"[{self.name}] {endpoint}: Success on attempt {attempt + 1} (timeout: {endpoint_timeout}s)")
+                    logger.debug(f"[{self.name}] {endpoint}: Success on attempt {attempt + 1} (timeout: {endpoint_timeout:.3f}s)")
                     return await response.json()
                     
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -615,7 +714,7 @@ class Service(SimpleService):
         if 'wan_ipv6_online' in self.data:
             add_line('system_status', 'wan_ipv6_online', 'IPv6 Online', 'absolute')
         
-        # --- Uptime Chart (New) ---
+        # --- Uptime Chart ---
         add_chart('system_uptime', 'System Uptime', 'seconds', 'system', f'{self.name}.system_uptime')
         if 'system_uptime' in self.data:
             add_line('system_uptime', 'system_uptime', 'Uptime', 'absolute')
